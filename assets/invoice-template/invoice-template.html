@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>فاکتور فروش - Samiito</title>
+<style>
+@page{size:A4;margin:0}*{box-sizing:border-box}body{margin:0;background:#fff;color:#111;font-family:"Vazirmatn","IRANSans",Tahoma,Arial,sans-serif;font-size:12px}
+.invoice{width:210mm;min-height:297mm;padding:8mm 7mm;margin:auto}.box{border:1px solid #222;border-radius:2mm}
+.header{height:46mm;display:grid;grid-template-columns:42% 58%;overflow:hidden;position:relative}
+.brand{direction:ltr;display:flex;align-items:center;justify-content:center;padding:4mm;border-left:1px solid #222}
+.brand img{max-width:78mm;max-height:31mm;object-fit:contain}.store{padding:4mm 5mm 3mm;text-align:right;line-height:1.8}
+.store-title{font-size:19px;font-weight:800;margin-bottom:1mm}.invoice-title{position:absolute;left:50%;transform:translateX(-50%);top:13mm;font-size:18px;font-weight:800;white-space:nowrap}
+.store-line{font-size:10.5px;line-height:1.55}.store-address{font-size:12px;font-weight:600;line-height:1.7;max-width:100%;margin-top:0.5mm}
+.store-site{font-size:12.5px;font-weight:800;margin-top:1mm;text-align:right}.store-phones{font-size:11px;font-weight:600;line-height:1.5;text-align:right;margin-top:0.3mm}.links{text-align:right;font-size:10px;margin-top:1mm}.blue{color:#1260d8;font-weight:700}
+.meta{margin-top:2.5mm;padding:3mm;min-height:50mm;display:grid;grid-template-columns:28% 72%;gap:2mm;position:relative}
+.datebox{padding:2mm;line-height:2.2;font-weight:700}.customer{padding:0 2mm 2mm}.section-label{display:inline-block;background:#174b7d;color:#fff;border-radius:1.5mm;padding:1.2mm 4mm;font-weight:800;margin-bottom:2mm}
+.customer-grid{display:grid;grid-template-columns:1fr 1fr;gap:2mm 3mm}.field{display:flex;align-items:center;gap:2mm}.field label{white-space:nowrap;font-weight:700}.input{flex:1;min-height:7mm;border:1px solid #777;border-radius:1mm;padding:1mm 2mm}.address{grid-column:1/-1}.address .input{min-height:11mm}
+.items{width:100%;border-collapse:collapse;margin-top:2.5mm}.items th,.items td{border:1px solid #333;padding:1.5mm 2mm;height:9mm;text-align:center}.items th{background:#e9e9e9;font-weight:800}.rowno{width:10%}.name{width:57%;text-align:right!important}.qty{width:13%}.price{width:20%}
+.summary{width:100%;border-collapse:collapse}.summary td{border:1px solid #333;padding:2mm;height:9mm}.labelcell{font-weight:800}.value{text-align:center}
+.lower{margin-top:2.5mm;display:grid;grid-template-columns:1fr 1fr}.lower>div{min-height:20mm;padding:3mm;border:1px solid #333}
+.description{margin-top:2.5mm;min-height:64mm;padding:3mm;position:relative}.description-title{font-weight:800;font-size:13px}.ack{position:absolute;right:5mm;bottom:7mm;line-height:2.2;font-weight:700}
+@media print{.invoice{margin:0}}
+</style></head>
+<body><div class="invoice">
+
+<div class="header box">
+<div class="brand"><img src="samiito-logo.png" alt="Samiito"></div>
+<div class="store">
+<div class="store-title">{{store_title}}</div><div class="invoice-title">فاکتور فروش</div>
+<div class="store-line store-address"><span>آدرس ما:</span> {{store_address}}</div>
+<div class="store-line store-site blue" dir="ltr">{{store_web}}</div>
+</div></div>
+
+<div class="meta box">
+<div class="datebox">تاریخ: {{invoice_date}}<br>ساعت: {{invoice_time}}</div>
+<div class="customer"><div class="section-label">مشخصات مشتری</div>
+<div class="customer-grid">
+<div class="field"><label>نام و نام خانوادگی:</label><div class="input">{{customer_name}}</div></div>
+<div class="field"><label>کد ملی:</label><div class="input">{{national_id}}</div></div>
+<div class="field"><label>شماره تماس:</label><div class="input">{{customer_phone}}</div></div>
+<div class="field"><label>تاریخ تولد:</label><div class="input">{{birth_date}}</div></div>
+<div class="field address"><label>آدرس:</label><div class="input">{{customer_address}}</div></div>
+</div></div>
+<div style="position:absolute;left:4mm;top:3mm;width:43mm"><div class="field"><label>شماره فاکتور:</label><div class="input">{{invoice_number}}</div></div></div>
+</div>
+
+<table class="items"><thead><tr><th class="rowno">ردیف</th><th class="name">نام کالا</th><th class="qty">تعداد</th><th class="price">قیمت واحد</th></tr></thead><tbody>
+<tr><td>۱</td><td class="name">{{product_name}}</td><td>{{quantity}}</td><td>{{unit_price}}</td></tr>
+<tr><td>۲</td><td></td><td></td><td></td></tr><tr><td>۳</td><td></td><td></td><td></td></tr><tr><td>۴</td><td></td><td></td><td></td></tr><tr><td>۵</td><td></td><td></td><td></td></tr>
+<tr><td>۶</td><td></td><td></td><td></td></tr><tr><td>۷</td><td></td><td></td><td></td></tr>
+</tbody></table>
+
+<table class="summary">
+<tr><td class="labelcell" colspan="2">جمع تعداد: {{total_quantity}}</td><td class="labelcell">سود خرید شما</td><td class="value">۰</td></tr>
+<tr><td class="labelcell" colspan="3">ارزش افزوده</td><td class="value">۰</td></tr>
+<tr><td class="labelcell">جمع فاکتور به حروف:</td><td colspan="2">{{total_words}}</td><td class="value">{{total_amount}}</td></tr>
+<tr><td class="labelcell">مجموع کل قابل پرداخت</td><td colspan="3" class="value">{{total_amount}}</td></tr>
+<tr><td class="labelcell">مانده حساب با احتساب این فاکتور</td><td colspan="2">{{account_balance}}</td><td class="labelcell">بدهکار / بستانکار</td></tr>
+</table>
+
+<div class="lower"><div>مسئول فروش این فاکتور: <strong>{{salesperson}}</strong></div><div>نحوه پرداخت: <strong>{{payment_method}}</strong></div></div>
+<div class="description box"><div class="description-title">توضیحات:</div><div>{{description}}</div>
+<div class="ack">کالای فاکتور فوق دریافت گردید.<br>امضا مشتری گرامی: ____________________</div></div>
+
+</div></body></html>

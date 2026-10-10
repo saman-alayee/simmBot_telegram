@@ -1,0 +1,23 @@
+node_modules/
+.vercel
+.env*
+.local-webhook.json
+.local/
+*-BACKUP-*/
+_restore-temp/
+*.before-fix.bak
+api/*.before-*
+
+# آرشیو و پچ‌های یک‌بارمصرف (نباید در ریشه برگردند)
+*.zip
+patch-*
+encoding-test*
+recovery-encoding-test*
+repair-test.cjs
+fix_encoding.py
+apply-claim-fix.cjs
+check-encoding.cjs
+compare-encoding.cjs
+final-check.cjs
+.docx-temp.zip
+.docx-extract/

@@ -1,0 +1,29 @@
+{
+  "name": "sami-sim-telegram-bot",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "test": "node --test ./test/logic.test.js ./test/pdf.test.js ./test/channel-notices.test.js ./test/channel-messages.test.js ./test/excel-import.test.js ./test/bot-commands.test.js ./test/telegram-text.test.js",
+    "test:flows": "node scripts/test/bot-flows.mjs",
+    "spec:compliance": "node scripts/test/spec-compliance.mjs",
+    "test:all": "node scripts/test/run-all-tests.mjs",
+    "local:bootstrap": "node scripts/dev/bootstrap-local.mjs --force",
+    "local": "node scripts/dev/local-server.mjs",
+    "excel-template": "node scripts/ops/generate-excel-template.mjs",
+    "regenerate-invoices": "node scripts/ops/regenerate-invoices.mjs"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.10",
+    "@neondatabase/serverless": "^1.0.1",
+    "pdfkit": "^0.20.2",
+    "pg": "^8.23.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "embedded-postgres": "^18.4.0-beta.17"
+  }
+}
