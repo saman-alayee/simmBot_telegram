@@ -1,6 +1,8 @@
 node_modules/
 .vercel
 .env*
+vercel.env
+!vercel.env.example
 .local-webhook.json
 .local/
 *-BACKUP-*/

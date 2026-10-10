@@ -36,4 +36,5 @@
 
 ## Cron production
 - [ ] Vercel Cron به `/api/cron` با `Authorization: Bearer CRON_SECRET`
+- [ ] **Hobby:** در `vercel.json` فقط یک بار در روز (`0 3 * * *` ≈ ۰۶:۳۰ تهران). برای هر ۱۵ دقیقه: Pro یا سرویس خارجی (مثلاً [cron-job.org](https://cron-job.org)) → `GET https://<domain>/api/cron` با هدر `Authorization: Bearer <CRON_SECRET>`
 - [ ] لاگ: `reservations`, `sold_cleanup`, `special_sales` > 0 در سناریوی تست
