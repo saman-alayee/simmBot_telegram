@@ -1,7 +1,11 @@
-import { neon } from '@neondatabase/serverless';
+import { Pool, neonConfig } from '@neondatabase/serverless';
 import pg from 'pg';
+import ws from 'ws';
+
+neonConfig.webSocketConstructor = ws;
 
 const localQueries = new Map();
+const remoteQueries = new Map();
 
 function isLocalDatabase(url) {
   if (process.env.LOCAL_PG === '1') return true;
@@ -40,7 +44,15 @@ export function sql() {
     }
     return localQueries.get(url);
   }
-  return neon(url);
+  if (!remoteQueries.has(url)) {
+    remoteQueries.set(url, makePgQuery(new Pool({
+      connectionString: url,
+      max: 3,
+      idleTimeoutMillis: 20_000,
+      connectionTimeoutMillis: 15_000
+    })));
+  }
+  return remoteQueries.get(url);
 }
 
 export function ceilTo(value, unit) {

@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 let ready = null;
 
 function quoteIdent(name) {
@@ -7,6 +10,15 @@ function quoteIdent(name) {
 
 async function run(q, sqlText) {
   await q.query(sqlText);
+}
+
+async function ensureBaseSchema(q) {
+  const exists = await q.query(
+    `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'listings' LIMIT 1`
+  );
+  if (exists.length) return;
+  const sqlPath = path.join(process.cwd(), 'scripts', 'dev', 'local-base-schema.sql');
+  await q.query(fs.readFileSync(sqlPath, 'utf8'));
 }
 
 export function ensureSchema(q) {
@@ -19,6 +31,8 @@ export function resetSchemaCache() {
 }
 
 async function applySchema(q) {
+  await ensureBaseSchema(q);
+
   const statements = [
     `ALTER TABLE listings ADD COLUMN IF NOT EXISTS phone_display TEXT`,
     `ALTER TABLE listings ADD COLUMN IF NOT EXISTS cycle_no INTEGER NOT NULL DEFAULT 1`,
