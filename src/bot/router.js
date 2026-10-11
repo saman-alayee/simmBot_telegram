@@ -540,7 +540,7 @@ export async function handleUpdate({ q, request, update }) {
       ].join('\n'));
       return;
     }
-    await beginRegistration(q, chatId, uid, parsed);
+    await beginRegistration(q, chatId, uid, parsed, actor);
     return;
   }
   await say(chatId, staffUnknownHint(actor));
@@ -1154,6 +1154,21 @@ async function handlePendingText(q, request, message, actor, text) {
       await say(chatId, `سقف مالک روی ${capacityLabel(used, slots)} تنظیم شد.`);
       return true;
     }
+    if (ownerSession?.action === 'warehouse_add') {
+      const name = text.trim();
+      if (!name) { await say(chatId, 'نام انبار را وارد کنید.'); return true; }
+      const exists = (await q`SELECT id FROM warehouses WHERE lower(name) = lower(${name}) LIMIT 1`)[0];
+      if (exists) {
+        await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${uid}`;
+        await say(chatId, `انبار «${name}» از قبل وجود دارد.`);
+        return true;
+      }
+      await q`INSERT INTO warehouses(name, active) VALUES(${name}, true)`;
+      await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${uid}`;
+      await say(chatId, `انبار «${name}» اضافه شد.`);
+      if (canViewWarehouses(actor)) await sendWarehouses(q, chatId, actor);
+      return true;
+    }
   }
   const chanmsgKey = ownerSession?.action?.match(/^chanmsg:(channel_msg_[a-z0-9_]+)$/);
   if (chanmsgKey && canEditChannelMessages(actor)) {
@@ -1246,7 +1261,7 @@ async function handlePendingText(q, request, message, actor, text) {
   return false;
 }
 
-async function beginRegistration(q, chatId, uid, parsed) {
+async function beginRegistration(q, chatId, uid, parsed, actor) {
   const [owners, warehouses] = await Promise.all([
     ownerChoices(q, { phone: parsed.phone }),
     q`SELECT id FROM warehouses WHERE active = true LIMIT 1`
@@ -1492,9 +1507,12 @@ async function sendOwners(q, chatId, actor) {
 async function sendWarehouses(q, chatId, actor) {
   const rows = await warehousesWithStock(q);
   if (!rows.length) {
+    const emptyKb = actor.isOwner
+      ? markup({ inline_keyboard: [[{ text: 'افزودن انبار', callback_data: 'wh_add' }]] })
+      : undefined;
     await say(chatId, actor.isOwner
-      ? 'هنوز انباری ثبت نشده است.\n\nافزودن: /addwarehouse نام\n(بدون انبار، ثبت خط ممکن نیست.)'
-      : 'هنوز انباری ثبت نشده است.\nاز مالک ربات بخواهید با /addwarehouse انبار تعریف کند.');
+      ? 'هنوز انباری ثبت نشده است.\n\nدکمه «افزودن انبار» را بزنید یا:\n/addwarehouse نام\n(بدون انبار، ثبت خط ممکن نیست.)'
+      : 'هنوز انباری ثبت نشده است.\nاز مالک ربات بخواهید با /addwarehouse انبار تعریف کند.', emptyKb);
     return;
   }
   const lines = rows.map((row, index) => warehouseStockLine(row, index)).join('\n');
@@ -1506,10 +1524,13 @@ async function sendWarehouses(q, chatId, actor) {
       callback_data: `wh_lines_${row.id}`
     }]);
   }
-  if (actor.allow('add_listing')) {
-    keyboard.push([{ text: 'ثبت خط جدید', callback_data: 'wh_add_listing' }]);
+  if (actor.isOwner) {
+    keyboard.push([{ text: 'افزودن انبار', callback_data: 'wh_add' }]);
   }
-  const footer = actor.isOwner ? '\n\nافزودن انبار: /addwarehouse نام\nغیرفعال: /removewarehouse ID' : '';
+  if (actor.allow('add_listing')) {
+    keyboard.push([{ text: 'ثبت سیم‌کارت (خط جدید)', callback_data: 'wh_add_listing' }]);
+  }
+  const footer = actor.isOwner ? '\n\nغیرفعال کردن انبار: /removewarehouse ID' : '';
   await say(chatId, `انبارها — موجودی خطوط باز\n\n${lines}\n\nروی هر انبار بزنید تا خطوط همان انبار را ببینید.${footer}`, markup({ inline_keyboard: keyboard }));
 }
 
@@ -1951,6 +1972,14 @@ async function handleCallback(q, request, callback) {
     if (!canViewWarehouses(actor)) { await deny(chatId, callback); return; }
     const warehouseId = Number(whLines[1]) || null;
     await sendLines(q, chatId, actor, 1, { warehouseId }, messageId);
+    await tg('answerCallbackQuery', { callback_query_id: callback.id });
+    return;
+  }
+  if (data === 'wh_add') {
+    if (!actor.isOwner) { await deny(chatId, callback); return; }
+    await q`INSERT INTO owner_action_sessions(telegram_user_id, action, owner_id) VALUES(${actor.uid}, 'warehouse_add', NULL)
+      ON CONFLICT(telegram_user_id) DO UPDATE SET action = 'warehouse_add', owner_id = NULL, created_at = NOW()`;
+    await say(chatId, 'افزودن انبار\n\nنام انبار را در پیام بعدی بفرستید.\n/cancel = انصراف');
     await tg('answerCallbackQuery', { callback_query_id: callback.id });
     return;
   }
