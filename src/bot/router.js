@@ -1,5 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { calcInstallment } from '../database/sql.js';
 import { channelText } from '../channel/channel.js';
 import {
@@ -10,7 +8,7 @@ import {
   channelMsgBodyFromMessage, parseSetChannelMsg, parseSetChannelMsgMeta, sendMessagePayload, utf16Length
 } from '../telegram/telegram-text.js';
 import { syncBotCommandsForChat } from '../bot/commands.js';
-import { LISTINGS_EXCEL_TEMPLATE, listingAdsFromExcelBuffer } from '../import/excel-import.js';
+import { buildListingsExcelTemplateBuffer, listingAdsFromExcelBuffer } from '../import/excel-import.js';
 import {
   ALL_PERMISSIONS, PERMISSIONS, PRICE_INCREASE_SCOPES,
   canAssignOwner, canManualDiscount, capacityLabel, decodePriceUpPercent, encodePriceUpPercent,
@@ -1683,11 +1681,6 @@ async function sendPartners(q, chatId) {
 }
 
 async function sendListingsExcelTemplate(chatId) {
-  const filePath = path.join(process.cwd(), LISTINGS_EXCEL_TEMPLATE);
-  if (!fs.existsSync(filePath)) {
-    await say(chatId, 'فایل قالب اکسل روی سرور پیدا نشد. یک بار npm run excel-template را اجرا کنید.');
-    return;
-  }
   const form = new FormData();
   form.append('chat_id', String(chatId));
   form.append('caption', [
@@ -1697,7 +1690,13 @@ async function sendListingsExcelTemplate(chatId) {
     'ستون‌های الزامی: سیم‌کارت، قیمت (تومان)',
     'اختیاری: وضعیت، توضیحات، مالک، انبار، تاریخ سند'
   ].join('\n'));
-  form.append('document', new Blob([fs.readFileSync(filePath)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), 'قالب-ورود-خطوط.xlsx');
+  form.append(
+    'document',
+    new Blob([buildListingsExcelTemplateBuffer()], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    }),
+    'قالب-ورود-خطوط.xlsx'
+  );
   const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendDocument`, { method: 'POST', body: form });
   const result = await response.json();
   if (!result?.ok) await say(chatId, 'ارسال قالب ناموفق بود. دوباره /excel را بزنید.');

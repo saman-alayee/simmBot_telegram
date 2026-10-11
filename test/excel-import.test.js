@@ -1,10 +1,8 @@
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
-import { join } from 'node:path';
 import test from 'node:test';
 import { normalizeLookupName, parseDateInput } from '../src/domain/format.js';
 import { parseExcelAd } from '../src/domain/logic.js';
-import { listingAdsFromExcelBuffer } from '../src/import/excel-import.js';
+import { buildListingsExcelTemplateBuffer, listingAdsFromExcelBuffer } from '../src/import/excel-import.js';
 
 test('parseExcelAd accepts document date column', () => {
   const ad = parseExcelAd({
@@ -25,9 +23,7 @@ test('normalizeLookupName matches Arabic/Persian yeh and kaf', () => {
 });
 
 test('bundled excel template parses sample rows', () => {
-  const filePath = join(process.cwd(), 'templates', 'listings-import-template.xlsx');
-  assert.ok(existsSync(filePath), 'run npm run excel-template first');
-  const ads = listingAdsFromExcelBuffer(readFileSync(filePath));
+  const ads = listingAdsFromExcelBuffer(buildListingsExcelTemplateBuffer());
   assert.equal(ads.length, 2);
   assert.equal(ads[0].phone, '09121572758');
   assert.equal(ads[0].price, 580000000);

@@ -1,18 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as XLSX from 'xlsx';
+import { buildListingsExcelTemplateBuffer } from '../../src/import/excel-import.js';
 
 const outDir = path.join(process.cwd(), 'templates');
 const outFile = path.join(outDir, 'listings-import-template.xlsx');
 const sampleFile = path.join(outDir, 'sample-listings-demo.xlsx');
 
 const header = ['سیم‌کارت', 'قیمت', 'وضعیت', 'توضیحات', 'مالک', 'انبار', 'تاریخ سند'];
-
-const sheetData = [
-  header,
-  ['0912 157 27 58', 580000000, 'کارکرده', 'نمونه — رند', 'نام دقیق مالک در سیستم', 'نام دقیق انبار', '1405/07/25'],
-  ['09124561595', 350000000, 'زیرقیمت', '-', '', '', '']
-];
 
 /** چند خط نمونه برای تست لوکال (مالک تست / انبار تست از اسکیمای محلی) */
 const demoRows = [
@@ -50,7 +45,7 @@ function writeWorkbook(filePath, linesSheet) {
 }
 
 fs.mkdirSync(outDir, { recursive: true });
-writeWorkbook(outFile, sheetData);
+fs.writeFileSync(outFile, buildListingsExcelTemplateBuffer());
 writeWorkbook(sampleFile, demoRows);
 console.log('نوشته شد:', outFile);
 console.log('نوشته شد:', sampleFile);
