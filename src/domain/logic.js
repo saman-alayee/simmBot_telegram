@@ -288,6 +288,14 @@ export function validNationalId(value) {
   return ok ? digits : null;
 }
 
+function excelLookupName(value) {
+  const name = String(value || '').trim();
+  if (!name || name === '-') return null;
+  // متن‌های نمونه قالب را به‌عنوان «خالی» بگیر تا کل ردیف به‌خاطر مالک/انبار ساختگی fail نشود
+  if (/نام دقیق (مالک|انبار)|افزودن مالک|مثال|نمونه/i.test(name)) return null;
+  return name;
+}
+
 export function parseExcelAd(row) {
   const source = row || {};
   const phoneRaw = source['سیم‌کارت'] ?? source['سیم کارت'] ?? source['شماره'];
@@ -310,8 +318,8 @@ export function parseExcelAd(row) {
     displayPhone: formatPhoneDigits(digits) || String(phoneRaw).trim(),
     price: Math.round(price),
     condition,
-    ownerName: String(source['مالک'] || '').trim() || null,
-    warehouseName: String(source['انبار'] || '').trim() || null,
+    ownerName: excelLookupName(source['مالک']),
+    warehouseName: excelLookupName(source['انبار']),
     documentDate
   };
 }

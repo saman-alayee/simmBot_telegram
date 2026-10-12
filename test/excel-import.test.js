@@ -16,6 +16,17 @@ test('parseExcelAd accepts document date column', () => {
   assert.equal(parseExcelAd({ 'سیم‌کارت': '09121572758', 'قیمت': '100', 'تاریخ سند': 'invalid' }), null);
 });
 
+test('parseExcelAd ignores template placeholder owner/warehouse', () => {
+  const ad = parseExcelAd({
+    'سیم‌کارت': '09121572758',
+    'قیمت': '580000000',
+    'مالک': 'نام دقیق مالک در سیستم',
+    'انبار': 'نام دقیق انبار'
+  });
+  assert.equal(ad?.ownerName, null);
+  assert.equal(ad?.warehouseName, null);
+});
+
 test('normalizeLookupName matches Arabic/Persian yeh and kaf', () => {
   assert.equal(normalizeLookupName('ارين اسلامى'), normalizeLookupName('ارین اسلامی'));
   assert.equal(normalizeLookupName('پوريا'), normalizeLookupName('پوریا'));

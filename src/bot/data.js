@@ -196,6 +196,7 @@ export async function warehouseIdByName(q, name) {
 export async function syncChannel(q, tg, row, origin, installmentConfig = null) {
   if (!row) return null;
   const bot = process.env.BOT_USERNAME || 'SamiSIM0912Bot';
+  const channelId = String(process.env.CHANNEL_ID || '').trim();
   const inst = installmentConfig || await getInstallmentConfig(q);
   const { texts, entities } = await loadChannelMessageBundles(q, settingValue);
   const text = channelText(row, {
@@ -205,29 +206,34 @@ export async function syncChannel(q, tg, row, origin, installmentConfig = null) 
     statusMessages: texts,
     statusEntities: entities
   });
-  const replyMarkup = { inline_keyboard: [] };
   if (row.channel_chat_id && row.channel_message_id) {
     const edited = await tg('editMessageText', {
       chat_id: row.channel_chat_id,
       message_id: row.channel_message_id,
       text,
-      parse_mode: 'HTML',
-      reply_markup: replyMarkup
+      parse_mode: 'HTML'
     });
     if (editAccepted(edited)) return edited;
+    // پست قبلی حذف شده یا قابل ویرایش نیست → شناسه کهنه را پاک کن و پست تازه بفرست
+    if (/message to edit not found|message can't be edited|message is not modified/i.test(String(edited?.description || ''))) {
+      await q`UPDATE listings SET channel_chat_id = NULL, channel_message_id = NULL, updated_at = NOW() WHERE id = ${row.id}`;
+      row.channel_chat_id = null;
+      row.channel_message_id = null;
+    }
   }
-  if (!process.env.CHANNEL_ID || row.status === 'sold') return null;
+  if (!channelId || row.status === 'sold') {
+    return { ok: false, description: channelId ? `status=${row.status}` : 'CHANNEL_ID missing' };
+  }
   const sent = await tg('sendMessage', {
-    chat_id: process.env.CHANNEL_ID,
+    chat_id: channelId,
     text,
-    parse_mode: 'HTML',
-    reply_markup: replyMarkup
+    parse_mode: 'HTML'
   });
   if (sent?.ok) {
     const previousChat = row.channel_chat_id;
     const previousMessage = row.channel_message_id;
     await q`UPDATE listings
-      SET channel_chat_id = ${String(process.env.CHANNEL_ID)},
+      SET channel_chat_id = ${channelId},
           channel_message_id = ${sent.result.message_id},
           updated_at = NOW()
       WHERE id = ${row.id}`;

@@ -1737,6 +1737,9 @@ async function syncExcel(q, request, message, actor) {
   const resumeKey = excelResumeKey(actor.uid, message.document.file_unique_id);
   const savedIndex = Number(await settingValue(q, resumeKey, '0')) || 0;
   const start = savedIndex > 0 && savedIndex < ads.length ? savedIndex : 0;
+  if (!String(process.env.CHANNEL_ID || '').trim()) {
+    await say(chatId, 'CHANNEL_ID روی سرور تنظیم نشده؛ خطوط در دیتابیس ثبت می‌شوند ولی در کانال منتشر نمی‌شوند.');
+  }
   await say(chatId, start
     ? `ادامهٔ ورود اکسل از ردیف ${start + 1} از ${ads.length}…`
     : `در حال ثبت اکسل (${ads.length} ردیف)…`);
@@ -1744,8 +1747,11 @@ async function syncExcel(q, request, message, actor) {
   const missingOwners = new Set();
   const missingWarehouses = new Set();
   let ownerFull = 0;
+  let lastChannelError = '';
   let index = start;
   const deadline = Date.now() + 18_000;
+  const origin = publicOrigin(request);
+  const installmentConfig = await getInstallmentConfig(q).catch(() => null);
   for (; index < ads.length; index += 1) {
     if (Date.now() >= deadline) break;
     const ad = ads[index];
@@ -1777,29 +1783,39 @@ async function syncExcel(q, request, message, actor) {
         by: actor.uid
       });
       const fresh = await listingById(q, saved.row.id);
-      let sent = await syncChannel(q, tg, fresh, publicOrigin(request));
+      let sent = await syncChannel(q, tg, fresh, origin, installmentConfig);
       const retryAfter = Number(sent?.parameters?.retry_after || 0);
-      if (!sent?.ok && retryAfter > 0 && retryAfter <= 3) {
-        await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
-        sent = await syncChannel(q, tg, fresh, publicOrigin(request));
+      if (!sent?.ok && retryAfter > 0) {
+        const waitMs = Math.min(retryAfter * 1000, Math.max(0, deadline - Date.now() - 500));
+        if (waitMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
+          sent = await syncChannel(q, tg, fresh, origin, installmentConfig);
+        }
       }
       const published = sent?.ok || /not modified/i.test(String(sent?.description || ''));
       if (published) channelOk += 1;
-      else channelMiss += 1;
+      else {
+        channelMiss += 1;
+        lastChannelError = String(sent?.description || sent?.error_code || 'unknown');
+      }
       if (saved.mode === 'create') created += 1; else updated += 1;
     } catch (error) {
       failed += 1;
       if (error?.message === 'OWNER_FULL') ownerFull += 1;
+      console.error('excel row failed', ad?.phone, error?.message || error);
     }
   }
   const finished = index >= ads.length;
   if (finished) await q`DELETE FROM settings WHERE key = ${resumeKey}`;
   else await putSetting(q, resumeKey, String(index));
   const ownerHint = missingOwners.size
-    ? `مالک پیدا نشد: ${[...missingOwners].slice(0, 8).join(' · ')}`
+    ? `مالک پیدا نشد (نام باید دقیقاً مثل /owners باشد؛ یا ستون مالک را خالی بگذارید):\n${[...missingOwners].slice(0, 8).join(' · ')}`
     : '';
   const whHint = missingWarehouses.size
-    ? `انبار پیدا نشد: ${[...missingWarehouses].slice(0, 8).join(' · ')}`
+    ? `انبار پیدا نشد (نام باید دقیقاً مثل انبارهای بات باشد؛ یا ستون انبار را خالی بگذارید):\n${[...missingWarehouses].slice(0, 8).join(' · ')}`
+    : '';
+  const channelHint = channelMiss && lastChannelError
+    ? `علت کانال: ${lastChannelError}`
     : '';
   const summary = [
     finished ? 'ورود اکسل تمام شد.' : 'بخشی از اکسل ثبت شد.',
@@ -1808,9 +1824,10 @@ async function syncExcel(q, request, message, actor) {
     `به‌روزرسانی خط باز: ${updated}`,
     `خطا: ${failed}${ownerFull ? ` (شامل ${ownerFull} سقف مالک)` : ''}`,
     `کانال — منتشر/به‌روز: ${channelOk} · منتشر نشد: ${channelMiss}`,
+    channelHint,
     ownerHint,
     whHint,
-    finished ? '' : 'همین فایل را دوباره بفرستید تا بقیهٔ ردیف‌ها ادامه پیدا کند. تا تمام شدن این فایل، پیام‌های بعدی ممکن است کمی دیر برسند.'
+    finished ? '' : 'همین فایل را دوباره بفرستید تا بقیهٔ ردیف‌ها ادامه پیدا کند.'
   ].filter(Boolean).join('\n').slice(0, 3500);
   await say(chatId, summary);
 }
