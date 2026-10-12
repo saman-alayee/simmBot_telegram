@@ -470,13 +470,18 @@ async function deny(chatId, callback) {
 export async function handleUpdate({ q, request, update }) {
   if (update.callback_query) return handleCallback(q, request, update.callback_query);
   const message = update.message;
-  if (message?.document?.file_name?.toLowerCase().endsWith('.xlsx')) {
+  if (isExcelDocument(message?.document)) {
     const actor = await actorOf(q, message.from?.id);
     if (!(actor.isOwner || actor.allow('add_listing'))) {
       await say(message.chat.id, 'ورود اکسل فقط برای کسانی است که دسترسی «ثبت خط» دارند.');
       return;
     }
-    await syncExcel(q, request, message, actor);
+    try {
+      await syncExcel(q, request, message, actor);
+    } catch (error) {
+      console.error(error);
+      await say(message.chat.id, 'ورود اکسل ناتمام ماند. چند لحظه بعد همین فایل را دوباره بفرستید تا از همان‌جا ادامه پیدا کند.');
+    }
     return;
   }
   if (!message?.text && !message?.contact?.phone_number) return;
@@ -1702,6 +1707,17 @@ async function sendListingsExcelTemplate(chatId) {
   if (!result?.ok) await say(chatId, 'ارسال قالب ناموفق بود. دوباره /excel را بزنید.');
 }
 
+function isExcelDocument(document) {
+  if (!document) return false;
+  const name = String(document.file_name || '').toLowerCase();
+  if (name.endsWith('.xlsx')) return true;
+  return document.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+}
+
+function excelResumeKey(uid, fileUniqueId) {
+  return `excel_resume:${uid}:${fileUniqueId || 'file'}`;
+}
+
 async function syncExcel(q, request, message, actor) {
   const chatId = message.chat.id;
   const file = await tg('getFile', { file_id: message.document.file_id });
@@ -1718,11 +1734,21 @@ async function syncExcel(q, request, message, actor) {
     await say(chatId, 'هیچ ردیف معتبری پیدا نشد.\nاز /excel قالب را بگیرید؛ برگه اول باید «خطوط» باشد و ستون‌های سیم‌کارت و قیمت پر شوند.');
     return;
   }
+  const resumeKey = excelResumeKey(actor.uid, message.document.file_unique_id);
+  const savedIndex = Number(await settingValue(q, resumeKey, '0')) || 0;
+  const start = savedIndex > 0 && savedIndex < ads.length ? savedIndex : 0;
+  await say(chatId, start
+    ? `ادامهٔ ورود اکسل از ردیف ${start + 1} از ${ads.length}…`
+    : `در حال ثبت اکسل (${ads.length} ردیف)…`);
   let created = 0, updated = 0, failed = 0, channelOk = 0, channelMiss = 0;
   const missingOwners = new Set();
   const missingWarehouses = new Set();
   let ownerFull = 0;
-  for (const ad of ads) {
+  let index = start;
+  const deadline = Date.now() + 18_000;
+  for (; index < ads.length; index += 1) {
+    if (Date.now() >= deadline) break;
+    const ad = ads[index];
     try {
       let ownerId;
       let warehouseId;
@@ -1753,7 +1779,7 @@ async function syncExcel(q, request, message, actor) {
       const fresh = await listingById(q, saved.row.id);
       let sent = await syncChannel(q, tg, fresh, publicOrigin(request));
       const retryAfter = Number(sent?.parameters?.retry_after || 0);
-      if (!sent?.ok && retryAfter > 0) {
+      if (!sent?.ok && retryAfter > 0 && retryAfter <= 3) {
         await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000));
         sent = await syncChannel(q, tg, fresh, publicOrigin(request));
       }
@@ -1765,28 +1791,28 @@ async function syncExcel(q, request, message, actor) {
       failed += 1;
       if (error?.message === 'OWNER_FULL') ownerFull += 1;
     }
-    await new Promise((resolve) => setTimeout(resolve, 220));
   }
+  const finished = index >= ads.length;
+  if (finished) await q`DELETE FROM settings WHERE key = ${resumeKey}`;
+  else await putSetting(q, resumeKey, String(index));
   const ownerHint = missingOwners.size
-    ? `\nمالک پیدا نشد (نام را مثل بات بنویسید یا در /owners بسازید):\n${[...missingOwners].join(' · ')}`
+    ? `مالک پیدا نشد: ${[...missingOwners].slice(0, 8).join(' · ')}`
     : '';
   const whHint = missingWarehouses.size
-    ? `\nانبار پیدا نشد:\n${[...missingWarehouses].join(' · ')}`
+    ? `انبار پیدا نشد: ${[...missingWarehouses].slice(0, 8).join(' · ')}`
     : '';
-  await say(chatId, [
-    'ورود اکسل تمام شد.',
-    `ردیف معتبر: ${ads.length}`,
+  const summary = [
+    finished ? 'ورود اکسل تمام شد.' : 'بخشی از اکسل ثبت شد.',
+    `این مرحله: ردیف ${start + 1} تا ${Math.max(start + 1, index)} از ${ads.length}`,
     `ثبت جدید: ${created}`,
     `به‌روزرسانی خط باز: ${updated}`,
     `خطا: ${failed}${ownerFull ? ` (شامل ${ownerFull} سقف مالک)` : ''}`,
     `کانال — منتشر/به‌روز: ${channelOk} · منتشر نشد: ${channelMiss}`,
     ownerHint,
     whHint,
-    '',
-    'نام مالک در اکسل باید همان نام ثبت‌شده در بات باشد (ی/ک عربی هم قبول می‌شود).',
-    'ردیف «افزودن مالک» در قالب را با نام واقعی عوض کنید.',
-    'اگر «منتشر نشد» زیاد است CHANNEL_ID و دسترسی ربات به کانال را چک کنید.'
-  ].filter(Boolean).join('\n'));
+    finished ? '' : 'همین فایل را دوباره بفرستید تا بقیهٔ ردیف‌ها ادامه پیدا کند. تا تمام شدن این فایل، پیام‌های بعدی ممکن است کمی دیر برسند.'
+  ].filter(Boolean).join('\n').slice(0, 3500);
+  await say(chatId, summary);
 }
 
 async function continueInvoice(q, chatId, uid, draft, text) {

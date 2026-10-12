@@ -40,7 +40,7 @@ export default {
       return Response.json({ ok: true });
     } catch (error) {
       console.error(error);
-      return new Response('error', { status: 500 });
+      return Response.json({ ok: true });
     }
   }
 };
