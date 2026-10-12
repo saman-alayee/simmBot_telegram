@@ -111,9 +111,9 @@ CREATE TABLE IF NOT EXISTS purchase_requests (
 
 INSERT INTO settings(key, value) VALUES
   ('installment_interest_percent_monthly', '5'),
-  ('store_name', 'سامی (تست محلی)'),
+  ('store_name', 'سامی'),
   ('store_phone', '02100000000'),
-  ('store_address', 'تهران — محیط تست')
+  ('store_address', 'تهرانپارس پایین تر از میدان شاهد(پروین) روبروی پمپ بنزین نبش کوچه پینه فروشگاه سامی')
 ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO owners(name, active, max_line_slots)

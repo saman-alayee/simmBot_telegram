@@ -92,7 +92,10 @@ function totalWords(invoice) {
 /** متغیرهای {{placeholder}} در invoice-template.html */
 export function invoiceTemplateContext(invoice) {
   const created = invoice.created_at ? new Date(invoice.created_at) : new Date();
-  const storeTitle = invoice.store_name || 'فروشگاه سامی';
+  const storeTitle = String(invoice.store_name || 'سامی')
+    .replace(/\s*\(?\s*تست\s*محلی\s*\)?\s*/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || 'سامی';
   const storeAddress = resolveStoreAddressForInvoice(invoice.store_address);
   const storePhonesRaw = (invoice.store_phone || '').trim() || DEFAULT_STORE_PHONES;
   const storePhones = formatLtrRun(storePhonesRaw);
