@@ -23,12 +23,12 @@ import {
 import { invoicePdfFilename } from '../invoice/invoice-template.js';
 import {
   activeOwnersWithUsage, announceSold, applyManualListingDiscount, applySpecialSale, buildInvoice, clearManualListingDiscount,
-  clearReserveNotice, historyForPhone, historyLines,
+  clearReserveNotice, clearSoldNotice, historyForPhone, historyLines,
   getInstallmentConfig, increaseListingPricesByPercent, invoiceDraftPriceSummary, listingById, logChange,
   lookupListingByPhone, lookupText,
   openListingByPhone, ownerIdByName, ownerUsage, postReserveNotice, previewPriceIncrease, publicOrigin, putSetting,
   releaseListing, warehouseIdByName,
-  refreshInstallmentChannelPosts, reserveListing, saveListing, sellListing, settingValue, syncChannel
+  refreshInstallmentChannelPosts, reserveListing, saveListing, sellListing, settingValue, syncChannel, unsellListing
 } from './data.js';
 
 const ADMIN_LABELS = { 1: '@samiito0912', 2: '@Samisadeghirb' };
@@ -1370,6 +1370,7 @@ function lookupKeyboard(row, actor) {
       keyboard.push([{ text: 'تغییر وضعیت', callback_data: `lookup_status_${id}` }, { text: 'تغییر مالک', callback_data: `lookup_owner_${id}` }]);
       keyboard.push([{ text: 'تغییر انبار', callback_data: `lookup_warehouse_${id}` }, { text: 'تغییر تاریخ سند', callback_data: `lookup_date_${id}` }]);
     } else {
+      keyboard.push([{ text: 'لغو فروش (بازگشت به موجود)', callback_data: `lookup_unsell_${id}` }]);
       keyboard.push([{ text: 'تغییر تاریخ سند', callback_data: `lookup_date_${id}` }]);
     }
     if (canManualDiscount(actor) && ['active', 'reserved', 'ready_transfer'].includes(row.status)) {
@@ -2333,7 +2334,7 @@ async function handleLookupCallback(q, request, callback, actor, data) {
     await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'بسته شد' });
     return;
   }
-  const action = data.match(/^lookup_(reserve|release|sell|sellok|deliver|status|owner|warehouse|date|history|refresh|discount|cleardiscount)_(\d+)$/);
+  const action = data.match(/^lookup_(reserve|release|sell|sellok|deliver|unsell|status|owner|warehouse|date|history|refresh|discount|cleardiscount)_(\d+)$/);
   const setStatus = data.match(/^lookup_setstatus_(\d+)_(active|reserved|sold|inactive)$/);
   const setOwner = data.match(/^lookup_setowner_(\d+)_(\d+)$/);
   const setWarehouse = data.match(/^lookup_setwarehouse_(\d+)_(\d+)$/);
@@ -2384,6 +2385,23 @@ async function handleLookupCallback(q, request, callback, actor, data) {
       await announceSold(q, tg, { ...(fresh || sold), channel_chat_id: current.channel_chat_id, channel_message_id: current.channel_message_id });
       await presentLookup(q, chatId, actor, fresh, {
         suffix: '\n\nپاسخ «فروخته شد» روی آگهی کانال ثبت شد و ۴۸ ساعت بعد پاک می‌شود.',
+        withFooter: false
+      });
+      return;
+    }
+    if (name === 'unsell') {
+      const current = await listingById(q, id);
+      if (current?.status !== 'sold') {
+        await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'این خط فروخته نیست.' });
+        return;
+      }
+      await clearSoldNotice(q, tg, current);
+      const restored = await unsellListing(q, id, actor.uid);
+      if (!restored) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'لغو فروش ممکن نشد.' }); return; }
+      await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'فروش لغو شد.' });
+      const fresh = await syncListingChannel(q, request, id);
+      await presentLookup(q, chatId, actor, fresh, {
+        suffix: '\n\nReply «فروخته شد» از کانال حذف شد و خط به موجودی برگشت.',
         withFooter: false
       });
       return;
@@ -2475,8 +2493,12 @@ async function handleLookupCallback(q, request, callback, actor, data) {
     if (next === 'active') {
       const current = await listingById(q, id);
       if (current?.status === 'reserved') { await handleLookupCallback(q, request, { ...callback, data: `lookup_release_${id}` }, actor, `lookup_release_${id}`); return; }
+      if (current?.status === 'sold') { await handleLookupCallback(q, request, { ...callback, data: `lookup_unsell_${id}` }, actor, `lookup_unsell_${id}`); return; }
     }
-    const current = (await q`SELECT status FROM listings WHERE id = ${id}`)[0];
+    const current = await listingById(q, id);
+    if (current?.status === 'sold' && next !== 'sold') {
+      await clearSoldNotice(q, tg, current);
+    }
     await q`UPDATE listings SET status = ${next}, updated_at = NOW() WHERE id = ${id}`;
     await logChange(q, { listingId: id, field: 'status', from: current?.status, to: next, by: actor.uid });
     await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'وضعیت تغییر کرد.' });

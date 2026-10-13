@@ -406,6 +406,33 @@ export async function sellListing(q, id, uid) {
   return row;
 }
 
+export async function clearSoldNotice(q, tg, row) {
+  if (!row?.id || !row.sold_reply_message_id) return row;
+  await deleteChannelMessage(tg, row.channel_chat_id, row.sold_reply_message_id);
+  await q`UPDATE listings SET sold_reply_message_id = NULL, updated_at = NOW() WHERE id = ${row.id}`;
+  row.sold_reply_message_id = null;
+  return row;
+}
+
+export async function unsellListing(q, id, uid) {
+  const rows = await q`
+    UPDATE listings
+    SET status = 'active',
+        sold_at = NULL,
+        channel_cleaned_at = NULL,
+        sale_document_status = NULL,
+        updated_at = NOW()
+    WHERE id = ${id} AND status = 'sold'
+    RETURNING *`;
+  const row = rows[0];
+  if (!row) return null;
+  await Promise.all([
+    logChange(q, { listingId: id, field: 'sale_cancel', from: 'sold', to: 'active', by: uid }),
+    logChange(q, { listingId: id, field: 'status', from: 'sold', to: 'active', by: uid })
+  ]);
+  return row;
+}
+
 export async function announceSold(q, tg, row) {
   if (row?.channel_chat_id && row?.channel_message_id) {
     const { texts, entities } = await loadChannelMessageBundles(q, settingValue);

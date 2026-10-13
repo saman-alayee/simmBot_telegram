@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  clearReserveNotice, deleteChannelMessage, postReserveNotice, postSpecialSaleNotice
+  clearReserveNotice, clearSoldNotice, deleteChannelMessage, postReserveNotice, postSpecialSaleNotice
 } from '../src/bot/data.js';
 
 function mockTg() {
@@ -81,4 +81,25 @@ test('special sale notice replies on channel post', async () => {
 test('deleteChannelMessage treats missing message as success', async () => {
   const tg = async () => ({ ok: false, description: 'message to delete not found' });
   assert.equal(await deleteChannelMessage(tg, '-1', 1), true);
+});
+
+test('sold channel reply is deleted when sale is cancelled', async () => {
+  const { tg, calls } = mockTg();
+  const q = async (strings) => {
+    const text = strings.join('?');
+    if (text.includes('sold_reply_message_id = NULL')) return [];
+    return [];
+  };
+  q.query = async () => ({ rows: [] });
+  const row = {
+    id: 9,
+    status: 'sold',
+    channel_chat_id: '-1001',
+    channel_message_id: 70,
+    sold_reply_message_id: 88
+  };
+  const cleared = await clearSoldNotice(q, tg, row);
+  assert.equal(cleared.sold_reply_message_id, null);
+  assert.equal(calls.filter((c) => c.method === 'deleteMessage').length, 1);
+  assert.equal(calls[0].payload.message_id, 88);
 });
