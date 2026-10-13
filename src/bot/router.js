@@ -71,7 +71,7 @@ async function warehousesWithStock(q) {
     COUNT(l.id) FILTER (WHERE l.status = 'ready_transfer')::int AS ready_lines,
     COUNT(l.id) FILTER (WHERE l.status = 'inactive')::int AS inactive_lines
   FROM warehouses w
-  LEFT JOIN listings l ON l.warehouse_id = w.id
+  LEFT JOIN listings l ON l.warehouse_id = w.id AND l.status IN ('active','reserved','ready_transfer','inactive')
   GROUP BY w.id, w.name, w.active
   ORDER BY w.active DESC, w.name`;
 }
@@ -1366,8 +1366,12 @@ function lookupKeyboard(row, actor) {
     } else if (saleAllowed(row.status)) {
       keyboard.push([{ text: 'فروش نهایی', callback_data: `lookup_sell_${id}` }]);
     }
-    keyboard.push([{ text: 'تغییر وضعیت', callback_data: `lookup_status_${id}` }, { text: 'تغییر مالک', callback_data: `lookup_owner_${id}` }]);
-    keyboard.push([{ text: 'تغییر انبار', callback_data: `lookup_warehouse_${id}` }, { text: 'تغییر تاریخ سند', callback_data: `lookup_date_${id}` }]);
+    if (row.status !== 'sold') {
+      keyboard.push([{ text: 'تغییر وضعیت', callback_data: `lookup_status_${id}` }, { text: 'تغییر مالک', callback_data: `lookup_owner_${id}` }]);
+      keyboard.push([{ text: 'تغییر انبار', callback_data: `lookup_warehouse_${id}` }, { text: 'تغییر تاریخ سند', callback_data: `lookup_date_${id}` }]);
+    } else {
+      keyboard.push([{ text: 'تغییر تاریخ سند', callback_data: `lookup_date_${id}` }]);
+    }
     if (canManualDiscount(actor) && ['active', 'reserved', 'ready_transfer'].includes(row.status)) {
       keyboard.push([
         { text: 'تخفیف دستی', callback_data: `lookup_discount_${id}` },
@@ -1596,6 +1600,7 @@ async function sendLines(q, chatId, actor, page, filter, messageId, showLinesHin
   const status = filter.status || null;
   const ownerId = filter.ownerId || null;
   const warehouseId = filter.warehouseId || null;
+  const hideSold = warehouseId != null && !status;
   await q`INSERT INTO line_list_sessions(telegram_user_id, status, owner_id, warehouse_id, updated_at)
     VALUES(${actor.uid}, ${status}, ${ownerId}, ${warehouseId}, NOW())
     ON CONFLICT(telegram_user_id) DO UPDATE SET status = EXCLUDED.status, owner_id = EXCLUDED.owner_id, warehouse_id = EXCLUDED.warehouse_id, updated_at = NOW()`;
@@ -1604,12 +1609,14 @@ async function sendLines(q, chatId, actor, page, filter, messageId, showLinesHin
     q`SELECT COUNT(*)::int AS count FROM listings l
       WHERE (${status}::text IS NULL OR l.status = ${status})
         AND (${ownerId}::bigint IS NULL OR l.owner_id = ${ownerId})
-        AND (${warehouseId}::bigint IS NULL OR l.warehouse_id = ${warehouseId})`,
+        AND (${warehouseId}::bigint IS NULL OR l.warehouse_id = ${warehouseId})
+        AND (${hideSold}::boolean = false OR l.status <> 'sold')`,
     q`SELECT l.phone_display, l.phone_number, l.price_toman, l.status, l.prefix_code, o.name AS owner_name
       FROM listings l LEFT JOIN owners o ON o.id = l.owner_id
       WHERE (${status}::text IS NULL OR l.status = ${status})
         AND (${ownerId}::bigint IS NULL OR l.owner_id = ${ownerId})
         AND (${warehouseId}::bigint IS NULL OR l.warehouse_id = ${warehouseId})
+        AND (${hideSold}::boolean = false OR l.status <> 'sold')
       ORDER BY CASE WHEN l.prefix_code = 0 THEN 10 WHEN l.prefix_code BETWEEN 1 AND 9 THEN l.prefix_code ELSE 11 END, l.id DESC
       LIMIT ${limit} OFFSET ${(Math.max(1, page) - 1) * limit}`
   ]);
@@ -1623,11 +1630,12 @@ async function sendLines(q, chatId, actor, page, filter, messageId, showLinesHin
       WHERE (${status}::text IS NULL OR l.status = ${status})
         AND (${ownerId}::bigint IS NULL OR l.owner_id = ${ownerId})
         AND (${warehouseId}::bigint IS NULL OR l.warehouse_id = ${warehouseId})
+        AND (${hideSold}::boolean = false OR l.status <> 'sold')
       ORDER BY CASE WHEN l.prefix_code = 0 THEN 10 WHEN l.prefix_code BETWEEN 1 AND 9 THEN l.prefix_code ELSE 11 END, l.id DESC
       LIMIT ${limit} OFFSET ${(safePage - 1) * limit}`;
   }
   const body = rows.length ? rows.map((row, index) => `${(safePage - 1) * limit + index + 1}. ${formatPhoneDisplay(row.phone_number, row.phone_display)} — ${money(row.price_toman)} تومان — ${statusLabel(row.status)} — ${row.owner_name || '-'}`).join('\n') : 'خطی در این صفحه نیست.';
-  const filterText = `وضعیت: ${status ? statusLabel(status) : 'همه'} | مالک: ${ownerId || 'همه'} | انبار: ${warehouseId || 'همه'}`;
+  const filterText = `وضعیت: ${status ? statusLabel(status) : (hideSold ? 'موجودی انبار (بدون فروخته)' : 'همه')} | مالک: ${ownerId || 'همه'} | انبار: ${warehouseId || 'همه'}`;
   const token = status ? TOKEN_BY_STATUS[status] : 'all';
   const nav = [];
   if (safePage > 1) nav.push({ text: 'قبلی', callback_data: `lp_${safePage - 1}_${token}_${ownerId || 0}_${warehouseId || 0}` });
@@ -2486,6 +2494,10 @@ async function handleLookupCallback(q, request, callback, actor, data) {
       const already = String(current?.owner_id || '') === String(valueId);
       if (!canAssignOwner({ used, max: owner?.max_line_slots, alreadyOnThisOwner: already })) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'ظرفیت مالک تکمیل است.' }); return; }
     }
+    if (String(current?.status) === 'sold') {
+      await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'خط فروخته‌شده دیگر در انبار/ظرفیت مالک نیست.' });
+      return;
+    }
     if (column === 'owner_id') await q`UPDATE listings SET owner_id = ${valueId}, updated_at = NOW() WHERE id = ${listingId}`;
     else await q`UPDATE listings SET warehouse_id = ${valueId}, updated_at = NOW() WHERE id = ${listingId}`;
     await logChange(q, { listingId, field: column, from: current?.[column], to: valueId, by: actor.uid });
@@ -2500,11 +2512,13 @@ async function handleLinesCallback(q, callback, actor, data) {
   const messageId = callback.message.message_id;
   const session = (await q`SELECT * FROM line_list_sessions WHERE telegram_user_id = ${actor.uid}`)[0] || {};
   if (data === 'lpdf') {
+    const hideSold = session.warehouse_id != null && !session.status;
     const rows = await q`SELECT l.phone_display, l.phone_number, l.price_toman, l.status, o.name AS owner_name, w.name AS warehouse_name
       FROM listings l LEFT JOIN owners o ON o.id = l.owner_id LEFT JOIN warehouses w ON w.id = l.warehouse_id
       WHERE (${session.status || null}::text IS NULL OR l.status = ${session.status || null})
         AND (${session.owner_id || null}::bigint IS NULL OR l.owner_id = ${session.owner_id || null})
         AND (${session.warehouse_id || null}::bigint IS NULL OR l.warehouse_id = ${session.warehouse_id || null})
+        AND (${hideSold}::boolean = false OR l.status <> 'sold')`
       ORDER BY CASE WHEN l.prefix_code = 0 THEN 10 WHEN l.prefix_code BETWEEN 1 AND 9 THEN l.prefix_code ELSE 11 END, l.id DESC
       LIMIT 500`;
     const { linesPdf } = await import('../invoice/pdf.js');
