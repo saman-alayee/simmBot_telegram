@@ -15,7 +15,13 @@ export default {
     if (!rows[0]) return new Response('آگهی پیدا نشد', { status: 404 });
     const config = await getInstallmentConfig(q);
     if (!config.salesEnabled) return new Response('فروش اقساطی موقتاً غیرفعال است.', { status: 403 });
-    const html = calcPageHtml(rows[0], config, botLinkUsername(process.env.BOT_USERNAME || 'SamiSIM0912Bot'));
+    let bot = botLinkUsername(process.env.BOT_USERNAME || 'SamiSIM0912Bot');
+    try {
+      const me = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getMe`);
+      const body = await me.json();
+      if (body?.ok && body.result?.username) bot = botLinkUsername(body.result.username);
+    } catch { /* keep env fallback */ }
+    const html = calcPageHtml(rows[0], config, bot);
     return new Response(html, { headers: { 'content-type': 'text/html;charset=utf-8' } });
   }
 };

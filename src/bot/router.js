@@ -499,12 +499,16 @@ export async function handleUpdate({ q, request, update }) {
     return;
   }
   if (text === '/cancel') { await clearPending(q, uid); await say(chatId, 'عملیات ناتمام لغو شد.'); return; }
-  if (text === '/start' || text === '/help' || text.startsWith('/start ')) {
+  if (text === '/help' || /^\/start(?:@|$|\s)/i.test(text)) {
     await clearPending(q, uid);
     await syncBotCommandsForChat(tg, chatId, actor).catch(() => {});
-    if (text.startsWith('/start ')) {
+    if (/^\/start/i.test(text) && !/^\/start(?:@[A-Za-z0-9_]+)?$/i.test(text)) {
       const started = await handleDeepLink(q, message, text);
       if (started) return;
+      if (/\b(buy|cash)_/i.test(text)) {
+        await say(chatId, 'لینک خرید نامعتبر است یا این آگهی دیگر موجود نیست.\nاز همان پست کانال دوباره «خرید اقساطی» یا «خرید نقدی» را بزنید.');
+        return;
+      }
     }
     const guide = welcomeGuide(actor);
     if (actor.isStaff) {

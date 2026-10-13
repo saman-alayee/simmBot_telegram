@@ -1,6 +1,6 @@
 import { calcInstallment } from '../database/sql.js';
 import { formatPhoneDigits, parseDateInput, toLatinDigits } from './format.js';
-import { DEFAULT_INSTALLMENT, installmentChoiceValid } from './installment-config.js';
+import { DEFAULT_INSTALLMENT } from './installment-config.js';
 
 export const OPEN_STATUSES = ['active', 'reserved', 'ready_transfer', 'inactive'];
 export { DEFAULT_INSTALLMENT } from './installment-config.js';
@@ -160,7 +160,8 @@ export function parseStartPayload(text, installmentConfig = null) {
     const months = Number(parts[2]);
     const percent = parts.length === 4 ? Number(parts[3]) : cfg.defaultPercent;
     if (!Number.isInteger(listingId) || listingId <= 0) return null;
-    if (!installmentChoiceValid(months, percent, cfg)) return null;
+    if (!Number.isInteger(months) || months < 2 || months > 8) return null;
+    if (!Number.isInteger(percent) || percent < 1 || percent > 99) return null;
     return { kind: 'installment', listingId, months, percent };
   }
   if (parts[0] === 'cash' && parts.length === 2) {

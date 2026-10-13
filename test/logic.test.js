@@ -113,12 +113,14 @@ test('line list order is prefix 1 through 9 then 0', () => {
 
 test('installment deep link keeps the selected down payment', () => {
   assert.deepEqual(parseStartPayload('/start buy_15_6_40'), { kind: 'installment', listingId: 15, months: 6, percent: 40 });
-  assert.equal(parseStartPayload('/start buy_15_6_25'), null);
+  assert.deepEqual(parseStartPayload('/start@SamiSIM0912Bot buy_15_6_40'), { kind: 'installment', listingId: 15, months: 6, percent: 40 });
+  assert.deepEqual(parseStartPayload('/start buy_15_6_40@SamiSIM0912Bot'), { kind: 'installment', listingId: 15, months: 6, percent: 40 });
+  assert.equal(parseStartPayload('/start buy_15_1_40'), null);
   assert.deepEqual(parseStartPayload('/start cash_15'), { kind: 'cash', listingId: 15 });
   assert.deepEqual(parseStartPayload('/start cash_15@SamiSIM0912Bot'), { kind: 'cash', listingId: 15 });
   assert.deepEqual(parseStartPayload('/start@SamiSIM0912Bot cash_15'), { kind: 'cash', listingId: 15 });
   const html = calcPageHtml({ id: 15, price_toman: 500000000, phone_number: '09121111111', phone_display: '09121111111' }, { interestPercentMonthly: 5, monthOptions: [2, 3, 4, 5, 6, 7, 8], percentOptions: [30, 40, 50, 60, 70, 80, 90], roundToman: 50000 }, 'SamiSIM0912Bot');
-  assert.match(html, /buy_'\+id\+'_'\+months\+'_'\+pct/);
+  assert.match(html, /tg:\/\/resolve\?domain=/);
   assert.match(html, /خرید اقساطی/);
 });
 
