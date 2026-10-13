@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { channelText } from '../src/channel/channel.js';
+import { channelPurchaseKeyboard, channelText } from '../src/channel/channel.js';
 import {
   CHANNEL_MSG_DEFAULTS, canEditChannelMessages, channelMsgKeyFromAlias, loadChannelStatusMessages,
   renderChannelDocumentLine
@@ -34,6 +34,9 @@ test('channelText uses all customizable channel strings', () => {
   assert.match(text, /سند: /);
   assert.match(text, />اقساط</);
   assert.match(text, />نقد</);
+  const keyboard = channelPurchaseKeyboard(row, { bot: 'SamiSIM0912Bot', calcUrl: 'https://example.com/calc', installmentEnabled: true, statusMessages: msgs });
+  assert.equal(keyboard.inline_keyboard[0][1].url, 'https://t.me/SamiSIM0912Bot?start=cash_1');
+  assert.equal(keyboard.inline_keyboard[0][1].text, 'نقد');
 });
 
 test('renderChannelDocumentLine respects templates', () => {

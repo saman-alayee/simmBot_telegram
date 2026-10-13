@@ -1,9 +1,10 @@
 import {
+  botLinkUsername,
   displayDateTime, documentReadyLabel, formatListingPricePlain, formatPhoneDisplay, isDocumentReadyDue, money,
   normalizeLookupName, prefixCode
 } from '../domain/format.js';
 import { buildInstallmentConfig } from '../domain/installment-config.js';
-import { calcUrlFor, channelText } from '../channel/channel.js';
+import { calcUrlFor, channelPurchaseKeyboard, channelText } from '../channel/channel.js';
 import { resolveStoreAddressForInvoice } from '../invoice/invoice-template.js';
 import { loadChannelMessageBundles, loadChannelStatusMessages } from '../channel/channel-messages.js';
 import { sendMessagePayload, utf16Length } from '../telegram/telegram-text.js';
@@ -12,6 +13,20 @@ import {
   nextInvoiceNumber, priceAfterPercentIncrease, saleAllowed, specialPrice
 } from '../domain/logic.js';
 import { jalaliParts } from '../domain/format.js';
+
+let botUsernameCache = '';
+async function liveBotUsername(tg) {
+  if (botUsernameCache) return botUsernameCache;
+  try {
+    const me = await tg('getMe');
+    if (me?.ok && me.result?.username) {
+      botUsernameCache = botLinkUsername(me.result.username);
+      return botUsernameCache;
+    }
+  } catch { /* fall back to env */ }
+  botUsernameCache = botLinkUsername(process.env.BOT_USERNAME || 'SamiSIM0912Bot');
+  return botUsernameCache;
+}
 
 export async function logChange(q, { listingId, field, from, to, by = null }) {
   if (String(from ?? '') === String(to ?? '')) return;
@@ -193,44 +208,33 @@ export async function warehouseIdByName(q, name) {
   return hit?.id ?? null;
 }
 
-let cachedBotUsername = '';
-
-export async function resolvedBotUsername(tg) {
-  if (cachedBotUsername) return cachedBotUsername;
-  try {
-    const me = typeof tg === 'function'
-      ? await tg('getMe', {})
-      : await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getMe`).then((r) => r.json());
-    if (me?.ok && me.result?.username) {
-      cachedBotUsername = String(me.result.username).replace(/^@/, '');
-      return cachedBotUsername;
-    }
-  } catch {
-    /* fall through to env */
-  }
-  cachedBotUsername = String(process.env.BOT_USERNAME || 'SamiSIM0912Bot').replace(/^@/, '');
-  return cachedBotUsername;
-}
-
 export async function syncChannel(q, tg, row, origin, installmentConfig = null) {
   if (!row) return null;
-  const bot = await resolvedBotUsername(tg);
+  const bot = await liveBotUsername(tg);
   const channelId = String(process.env.CHANNEL_ID || '').trim();
   const inst = installmentConfig || await getInstallmentConfig(q);
   const { texts, entities } = await loadChannelMessageBundles(q, settingValue);
+  const calcUrl = calcUrlFor(origin, row.id);
   const text = channelText(row, {
     bot,
-    calcUrl: calcUrlFor(origin, row.id),
+    calcUrl,
     installmentEnabled: inst.salesEnabled,
     statusMessages: texts,
     statusEntities: entities
+  });
+  const replyMarkup = channelPurchaseKeyboard(row, {
+    bot,
+    calcUrl,
+    installmentEnabled: inst.salesEnabled,
+    statusMessages: texts
   });
   if (row.channel_chat_id && row.channel_message_id) {
     const edited = await tg('editMessageText', {
       chat_id: row.channel_chat_id,
       message_id: row.channel_message_id,
       text,
-      parse_mode: 'HTML'
+      parse_mode: 'HTML',
+      reply_markup: replyMarkup
     });
     if (editAccepted(edited)) return edited;
     // پست قبلی حذف شده یا قابل ویرایش نیست → شناسه کهنه را پاک کن و پست تازه بفرست
@@ -246,7 +250,8 @@ export async function syncChannel(q, tg, row, origin, installmentConfig = null) 
   const sent = await tg('sendMessage', {
     chat_id: channelId,
     text,
-    parse_mode: 'HTML'
+    parse_mode: 'HTML',
+    reply_markup: replyMarkup
   });
   if (sent?.ok) {
     const previousChat = row.channel_chat_id;

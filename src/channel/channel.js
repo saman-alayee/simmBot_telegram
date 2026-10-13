@@ -27,6 +27,20 @@ export function channelText(row, { bot, calcUrl, installmentEnabled = true, stat
   return lines.join('\n');
 }
 
+export function channelPurchaseKeyboard(row, { bot, calcUrl, installmentEnabled = true, statusMessages = null } = {}) {
+  if (!row || row.status !== 'active') return { inline_keyboard: [] };
+  const msgs = statusMessages || CHANNEL_MSG_DEFAULTS;
+  const buttons = [];
+  if (installmentEnabled && calcUrl) {
+    buttons.push({ text: msgs.channel_msg_link_installment || 'خرید اقساطی', url: calcUrl });
+  }
+  buttons.push({
+    text: msgs.channel_msg_link_cash || 'خرید نقدی',
+    url: `https://t.me/${botLinkUsername(bot)}?start=cash_${row.id}`
+  });
+  return { inline_keyboard: [buttons] };
+}
+
 export function calcUrlFor(origin, listingId) {
   const base = String(process.env.PUBLIC_CALC_BASE_URL || origin || '').replace(/\/$/, '');
   return `${base}/api/calc?listing=${listingId}`;
