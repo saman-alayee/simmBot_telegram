@@ -910,10 +910,9 @@ async function handleCommand(q, request, message, actor, text) {
     if (!actor.isOwner) { await deny(chatId); return true; }
     const owner = (await q`SELECT * FROM owners WHERE id = ${slot.id} LIMIT 1`)[0];
     if (!owner) { await say(chatId, 'مالک پیدا نشد.'); return true; }
-    const used = await ownerUsage(q, slot.id);
-    if (slot.slots < used) { await say(chatId, `این مالک ${used} خط باز دارد. سقف نمی‌تواند کمتر از ${used} باشد.`); return true; }
-    await q`UPDATE owners SET max_line_slots = ${slot.slots}, updated_at = NOW() WHERE id = ${slot.id}`;
-    await say(chatId, `سقف ${owner.name} روی ${capacityLabel(used, slot.slots)} تنظیم شد.`);
+    const applied = await applyOwnerCap(q, slot.id, slot.slots);
+    if (!applied.ok) { await say(chatId, applied.error); return true; }
+    await say(chatId, `سقف ${owner.name} روی ${capacityLabel(applied.owner.used, slot.slots)} تنظیم شد.`);
     return true;
   }
   if (text === '/warehouses' && canViewWarehouses(actor)) { await sendWarehouses(q, chatId, actor); return true; }
@@ -1148,13 +1147,11 @@ async function handlePendingText(q, request, message, actor, text) {
       return true;
     }
     if (ownerSession?.action === 'limit') {
-      const slots = Number(toLatinDigits(text.trim()));
-      if (!Number.isInteger(slots) || slots < 0 || slots > 100000) { await say(chatId, 'سقف باید یک عدد صحیح بین 0 تا 100000 باشد.'); return true; }
-      const used = await ownerUsage(q, ownerSession.owner_id);
-      if (slots < used) { await say(chatId, `این مالک ${used} خط باز دارد. سقف نمی‌تواند کمتر از ${used} باشد.`); return true; }
-      await q`UPDATE owners SET max_line_slots = ${slots}, updated_at = NOW() WHERE id = ${ownerSession.owner_id}`;
+      const slots = Number(toLatinDigits(text.trim()).replace(/\s/g, ''));
+      const applied = await applyOwnerCap(q, ownerSession.owner_id, slots);
       await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${uid}`;
-      await say(chatId, `سقف مالک روی ${capacityLabel(used, slots)} تنظیم شد.`);
+      if (!applied.ok) { await say(chatId, applied.error); return true; }
+      await say(chatId, `سقف «${applied.owner.name}» شد ${applied.owner.used} از ${slots}.`);
       return true;
     }
     if (ownerSession?.action === 'warehouse_add') {
@@ -1491,6 +1488,48 @@ async function sendHistory(q, chatId, raw) {
   const rows = await historyForPhone(q, phone.digits);
   const [owners, warehouses] = await Promise.all([q`SELECT id, name FROM owners`, q`SELECT id, name FROM warehouses`]);
   await say(chatId, `تاریخچه ${formatPhoneDisplay(phone.digits, phone.display)}\n\n${historyLines(rows, new Map(owners.map((item) => [String(item.id), item.name])), new Map(warehouses.map((item) => [String(item.id), item.name])))}`);
+}
+
+async function loadOwnerCard(q, ownerId) {
+  return (await q`SELECT o.id, o.name, o.active, o.max_line_slots, COUNT(l.id) FILTER (WHERE l.status IN ('active','reserved','ready_transfer','inactive'))::int AS used
+    FROM owners o LEFT JOIN listings l ON l.owner_id = o.id WHERE o.id = ${ownerId} GROUP BY o.id`)[0] || null;
+}
+
+function ownerManageMarkup(owner) {
+  const id = owner.id;
+  const capButton = (slots) => ({ text: String(slots), callback_data: `owner_cap_${id}_${slots}` });
+  return {
+    inline_keyboard: [
+      [{ text: owner.active ? 'غیرفعال کردن' : 'فعال کردن', callback_data: `owner_toggle_${id}` }],
+      [capButton(10), capButton(20), capButton(50), capButton(100)],
+      [{ text: 'عدد دلخواه سقف', callback_data: `owner_limit_${id}` }],
+      [{ text: 'لیست خطوط', callback_data: `owner_lines_${id}_1` }],
+      [{ text: 'بازگشت', callback_data: 'owners_back' }]
+    ]
+  };
+}
+
+function ownerManageText(owner) {
+  const used = Number(owner.used || 0);
+  const max = Number(owner.max_line_slots ?? 10);
+  return [
+    owner.name,
+    `وضعیت: ${owner.active ? 'فعال' : 'غیرفعال'}`,
+    `سیم‌کارت ثبت‌شده: ${used} از ${max}`,
+    '',
+    'سقف تعداد سیم‌کارت این مالک را از دکمه‌ها عوض کنید.',
+    'عدد دلخواه را هم می‌توانید تایپ کنید.'
+  ].join('\n');
+}
+
+async function applyOwnerCap(q, ownerId, slots) {
+  const owner = await loadOwnerCard(q, ownerId);
+  if (!owner) return { ok: false, error: 'مالک پیدا نشد.' };
+  const used = Number(owner.used || 0);
+  if (!Number.isInteger(slots) || slots < 0 || slots > 100000) return { ok: false, error: 'سقف باید یک عدد صحیح بین ۰ تا ۱۰۰۰۰۰ باشد.' };
+  if (slots < used) return { ok: false, error: `این مالک ${used} خط باز دارد. سقف نمی‌تواند کمتر از ${used} باشد.` };
+  await q`UPDATE owners SET max_line_slots = ${slots}, updated_at = NOW() WHERE id = ${ownerId}`;
+  return { ok: true, owner: { ...owner, max_line_slots: slots } };
 }
 
 async function sendOwners(q, chatId, actor) {
@@ -2140,29 +2179,40 @@ async function handleOwnerCallback(q, callback, actor, data) {
   if (data === 'owners_back') { await tg('deleteMessage', { chat_id: chatId, message_id: messageId }); await sendOwners(q, chatId, actor); await tg('answerCallbackQuery', { callback_query_id: callback.id }); return; }
   const manage = data.match(/^owner_manage_(\d+)$/);
   if (manage) {
-    const owner = (await q`SELECT o.id, o.name, o.active, o.max_line_slots, COUNT(l.id) FILTER (WHERE l.status IN ('active','reserved','ready_transfer','inactive'))::int AS used
-      FROM owners o LEFT JOIN listings l ON l.owner_id = o.id WHERE o.id = ${Number(manage[1])} GROUP BY o.id`)[0];
+    const owner = await loadOwnerCard(q, Number(manage[1]));
     if (!owner) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'مالک پیدا نشد.' }); return; }
     await tg('editMessageText', {
       chat_id: chatId, message_id: messageId,
-      text: `${owner.name}\nوضعیت: ${owner.active ? 'فعال' : 'غیرفعال'}\nظرفیت: ${capacityLabel(owner.used, owner.max_line_slots)}`,
-      reply_markup: JSON.stringify({ inline_keyboard: [
-        [{ text: owner.active ? 'غیرفعال کردن' : 'فعال کردن', callback_data: `owner_toggle_${owner.id}` }],
-        [{ text: 'تغییر سقف خطوط', callback_data: `owner_limit_${owner.id}` }],
-        [{ text: 'لیست خطوط', callback_data: `owner_lines_${owner.id}_1` }],
-        [{ text: 'بازگشت', callback_data: 'owners_back' }]
-      ] })
+      text: ownerManageText(owner),
+      reply_markup: JSON.stringify(ownerManageMarkup(owner))
     });
     await tg('answerCallbackQuery', { callback_query_id: callback.id });
+    return;
+  }
+  const cap = data.match(/^owner_cap_(\d+)_(\d+)$/);
+  if (cap) {
+    const applied = await applyOwnerCap(q, Number(cap[1]), Number(cap[2]));
+    if (!applied.ok) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: applied.error }); return; }
+    await tg('editMessageText', {
+      chat_id: chatId, message_id: messageId,
+      text: ownerManageText(applied.owner),
+      reply_markup: JSON.stringify(ownerManageMarkup(applied.owner))
+    });
+    await tg('answerCallbackQuery', { callback_query_id: callback.id, text: `سقف شد ${applied.owner.max_line_slots}` });
     return;
   }
   const toggle = data.match(/^owner_toggle_(\d+)$/);
   if (toggle) { await q`UPDATE owners SET active = NOT active, updated_at = NOW() WHERE id = ${Number(toggle[1])}`; await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'وضعیت مالک تغییر کرد.' }); return; }
   const limit = data.match(/^owner_limit_(\d+)$/);
   if (limit) {
+    const owner = await loadOwnerCard(q, Number(limit[1]));
     await q`INSERT INTO owner_action_sessions(telegram_user_id, action, owner_id) VALUES(${actor.uid}, 'limit', ${Number(limit[1])})
       ON CONFLICT(telegram_user_id) DO UPDATE SET action = 'limit', owner_id = EXCLUDED.owner_id, created_at = NOW()`;
-    await tg('editMessageText', { chat_id: chatId, message_id: messageId, text: 'عدد سقف جدید را بفرستید، یا از دستور /setownerslot ID تعداد استفاده کنید.' });
+    await tg('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text: `سقف جدید «${owner?.name || 'مالک'}» را بفرستید.\nالان: ${Number(owner?.used || 0)} از ${Number(owner?.max_line_slots ?? 10)}\nمثال: 25\n/cancel = انصراف`
+    });
     await tg('answerCallbackQuery', { callback_query_id: callback.id });
     return;
   }
