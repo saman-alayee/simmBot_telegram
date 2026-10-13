@@ -193,9 +193,28 @@ export async function warehouseIdByName(q, name) {
   return hit?.id ?? null;
 }
 
+let cachedBotUsername = '';
+
+export async function resolvedBotUsername(tg) {
+  if (cachedBotUsername) return cachedBotUsername;
+  try {
+    const me = typeof tg === 'function'
+      ? await tg('getMe', {})
+      : await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getMe`).then((r) => r.json());
+    if (me?.ok && me.result?.username) {
+      cachedBotUsername = String(me.result.username).replace(/^@/, '');
+      return cachedBotUsername;
+    }
+  } catch {
+    /* fall through to env */
+  }
+  cachedBotUsername = String(process.env.BOT_USERNAME || 'SamiSIM0912Bot').replace(/^@/, '');
+  return cachedBotUsername;
+}
+
 export async function syncChannel(q, tg, row, origin, installmentConfig = null) {
   if (!row) return null;
-  const bot = process.env.BOT_USERNAME || 'SamiSIM0912Bot';
+  const bot = await resolvedBotUsername(tg);
   const channelId = String(process.env.CHANNEL_ID || '').trim();
   const inst = installmentConfig || await getInstallmentConfig(q);
   const { texts, entities } = await loadChannelMessageBundles(q, settingValue);

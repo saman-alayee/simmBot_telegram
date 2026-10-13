@@ -583,8 +583,8 @@ async function handleDeepLink(q, message, text) {
     await say(chatId, 'فروش اقساطی فعلاً غیرفعال است. فقط «خرید نقدی» از کانال در دسترس است.');
     return true;
   }
-  const listing = (await q`SELECT id, phone_display, phone_number, price_toman FROM listings WHERE id = ${payload.listingId} AND status = 'active' LIMIT 1`)[0];
-  if (!listing) { await say(chatId, 'این آگهی دیگر موجود نیست.'); return true; }
+  const listing = (await q`SELECT id, phone_display, phone_number, price_toman, status FROM listings WHERE id = ${payload.listingId} LIMIT 1`)[0];
+  if (!listing || listing.status !== 'active') { await say(chatId, 'این آگهی دیگر موجود نیست.'); return true; }
   await q`INSERT INTO purchase_contact_sessions(telegram_user_id, listing_id, request_type, months, cash_percent, created_at)
     VALUES(${uid}, ${listing.id}, ${payload.kind}, ${payload.months || null}, ${payload.percent || null}, NOW())
     ON CONFLICT(telegram_user_id) DO UPDATE SET listing_id = EXCLUDED.listing_id, request_type = EXCLUDED.request_type,
@@ -594,6 +594,21 @@ async function handleDeepLink(q, message, text) {
     resize_keyboard: true,
     one_time_keyboard: true
   }));
+  if (payload.kind === 'cash') {
+    const who = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(' ') || 'مشتری';
+    const ping = [
+      '🔔 مشتری روی «خرید نقدی» زد',
+      '',
+      `خط: ${formatPhoneDisplay(listing.phone_number, listing.phone_display)}`,
+      `مشتری: ${who}`,
+      `شناسه تلگرام: ${uid}`,
+      message.from?.username ? `یوزرنیم: @${message.from.username}` : '',
+      '',
+      'منتظر شماره تماس مشتری… بعد از ارسال شماره، درخواست کامل می‌آید.'
+    ].filter(Boolean).join('\n');
+    const staffIds = await purchaseNotifyIds(q);
+    await Promise.all(staffIds.map((id) => tg('sendMessage', { chat_id: id, text: ping, disable_notification: false })));
+  }
   return true;
 }
 
@@ -614,9 +629,12 @@ async function handlePurchaseReply(q, message, actor, text) {
     await say(message.chat.id, 'این سیم‌کارت دیگر موجود نیست.');
     return true;
   }
-  const admins = await q`SELECT * FROM admins WHERE active = true ORDER BY priority ASC LIMIT 2`;
-  const first = admins.find((admin) => Number(admin.priority) === 1) || admins[0];
-  if (!first) { await say(message.chat.id, 'در حال حاضر ادمینی برای دریافت درخواست فعال نیست.'); return true; }
+  const notifyIds = await purchaseNotifyIds(q);
+  const assigned = notifyIds[0];
+  if (!assigned) {
+    await say(message.chat.id, 'در حال حاضر گیرنده‌ای برای درخواست خرید تنظیم نشده است.');
+    return true;
+  }
   const name = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(' ') || null;
   let inserted;
   if (session.request_type === 'installment') {
@@ -631,7 +649,7 @@ async function handlePurchaseReply(q, message, actor, text) {
       ) VALUES(
         ${listing.id}, ${message.from.id}, ${message.from?.username || null}, ${name}, ${phone}, ${months},
         ${listing.price_toman}, ${cash}, ${installment.balance}, ${installment.monthly}, ${installment.monthly * months},
-        'pending', ${first.telegram_user_id}, 1, NOW() + (${inst.requestExpireMinutes}::int * INTERVAL '1 minute'), 'installment', ${percent}
+        'pending', ${assigned}, 1, NOW() + (${inst.requestExpireMinutes}::int * INTERVAL '1 minute'), 'installment', ${percent}
       ) RETURNING id`)[0];
     await say(message.chat.id, `درخواست خرید اقساطی ثبت شد.\nپیش‌پرداخت ${percent}٪: ${money(cash)} تومان\n${months} قسط × ${money(installment.monthly)} تومان`, actor.isStaff ? markup(menuFor(actor)) : markup({ remove_keyboard: true }));
   } else {
@@ -642,14 +660,44 @@ async function handlePurchaseReply(q, message, actor, text) {
       ) VALUES(
         ${listing.id}, ${message.from.id}, ${message.from?.username || null}, ${name}, ${phone}, NULL,
         ${listing.price_toman}, ${listing.price_toman}, 0, NULL, NULL,
-        'pending', ${first.telegram_user_id}, 1, NOW() + (${inst.requestExpireMinutes}::int * INTERVAL '1 minute'), 'cash', NULL
+        'pending', ${assigned}, 1, NOW() + (${inst.requestExpireMinutes}::int * INTERVAL '1 minute'), 'cash', NULL
       ) RETURNING id`)[0];
     await say(message.chat.id, 'درخواست خرید نقدی ثبت شد. ادمین برای هماهنگی با شما تماس می‌گیرد.', actor.isStaff ? markup(menuFor(actor)) : markup({ remove_keyboard: true }));
   }
   const full = (await q`SELECT pr.*, l.phone_number, l.phone_display, l.condition_text FROM purchase_requests pr JOIN listings l ON l.id = pr.listing_id WHERE pr.id = ${inserted.id}`)[0];
-  await tg('sendMessage', { chat_id: first.telegram_user_id, text: adminText(full, ADMIN_LABELS[1]), reply_markup: adminKeyboard(inserted.id) });
+  await notifyPurchaseToStaff(notifyIds, full, inserted.id);
   await q`DELETE FROM purchase_contact_sessions WHERE telegram_user_id = ${message.from.id}`;
   return true;
+}
+
+async function purchaseNotifyIds(q) {
+  const ids = [];
+  const seen = new Set();
+  const add = (value) => {
+    const id = String(value || '').trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    ids.push(id);
+  };
+  add(ownerTelegramId());
+  for (const id of coOwnerTelegramIds()) add(id);
+  const admins = await q`SELECT telegram_user_id FROM admins WHERE active = true ORDER BY priority ASC`;
+  for (const row of admins) add(row.telegram_user_id);
+  return ids;
+}
+
+async function notifyPurchaseToStaff(ids, row, requestId) {
+  const text = adminText(row, ADMIN_LABELS[1]);
+  const keyboard = adminKeyboard(requestId);
+  await Promise.all(ids.map(async (chatId) => {
+    const result = await tg('sendMessage', {
+      chat_id: chatId,
+      text,
+      reply_markup: JSON.stringify(keyboard),
+      disable_notification: false
+    });
+    if (!result?.ok) console.warn('purchase notify failed', chatId, result?.description);
+  }));
 }
 
 function adminText(row, label) {

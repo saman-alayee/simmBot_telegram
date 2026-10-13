@@ -1,6 +1,5 @@
 import { sql } from '../src/database/sql.js';
-import { getInstallmentConfig } from '../src/bot/data.js';
-import { botLinkUsername } from '../src/domain/format.js';
+import { getInstallmentConfig, resolvedBotUsername } from '../src/bot/data.js';
 import { calcPageHtml } from '../src/web/installment-calc.js';
 
 export { calcPageHtml } from '../src/web/installment-calc.js';
@@ -15,7 +14,7 @@ export default {
     if (!rows[0]) return new Response('آگهی پیدا نشد', { status: 404 });
     const config = await getInstallmentConfig(q);
     if (!config.salesEnabled) return new Response('فروش اقساطی موقتاً غیرفعال است.', { status: 403 });
-    const html = calcPageHtml(rows[0], config, botLinkUsername(process.env.BOT_USERNAME));
+    const html = calcPageHtml(rows[0], config, await resolvedBotUsername());
     return new Response(html, { headers: { 'content-type': 'text/html;charset=utf-8' } });
   }
 };

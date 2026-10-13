@@ -151,7 +151,7 @@ export function sortListings(rows) {
 export function parseStartPayload(text, installmentConfig = null) {
   const cfg = installmentConfig || DEFAULT_INSTALLMENT;
   const raw = String(text || '').trim();
-  const token = raw.startsWith('/start') ? raw.slice(6).trim() : raw;
+  const token = (raw.startsWith('/start') ? raw.slice(6).trim() : raw).replace(/@.+$/, '').trim();
   if (!token) return { kind: 'bare' };
   const parts = token.split('_');
   if (parts[0] === 'buy' && (parts.length === 3 || parts.length === 4)) {
