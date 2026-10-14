@@ -98,7 +98,7 @@ const [{ default: telegram }, { default: calc }, { default: cron }] = await Prom
 ]);
 
 const port = Number(process.env.LOCAL_PORT || 8787);
-const publicOrigin = process.env.PUBLIC_BASE_URL || 'https://samisim0912bot-v2-1.vercel.app';
+const publicOrigin = process.env.PUBLIC_BASE_URL || 'https://simmbottelegram-eta.vercel.app';
 
 async function telegramApi(method, body) {
   const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {

@@ -2714,7 +2714,7 @@ async function handleLinesCallback(q, callback, actor, data) {
       WHERE (${session.status || null}::text IS NULL OR l.status = ${session.status || null})
         AND (${session.owner_id || null}::bigint IS NULL OR l.owner_id = ${session.owner_id || null})
         AND (${session.warehouse_id || null}::bigint IS NULL OR l.warehouse_id = ${session.warehouse_id || null})
-        AND (${hideSold}::boolean = false OR l.status <> 'sold')`
+        AND (${hideSold}::boolean = false OR l.status <> 'sold')
       ORDER BY CASE WHEN l.prefix_code = 0 THEN 10 WHEN l.prefix_code BETWEEN 1 AND 9 THEN l.prefix_code ELSE 11 END, l.id DESC
       LIMIT 500`;
     const { linesPdf } = await import('../invoice/pdf.js');

@@ -85,7 +85,7 @@ export async function ownerUsage(q, ownerId) {
 
 export function publicOrigin(request) {
   if (request?.url) return new URL(request.url).origin;
-  return process.env.PUBLIC_BASE_URL || 'https://samisim0912bot-v2-1.vercel.app';
+  return process.env.PUBLIC_BASE_URL || 'https://simmbottelegram-eta.vercel.app';
 }
 
 function editAccepted(result) {
