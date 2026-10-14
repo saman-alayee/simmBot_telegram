@@ -1,5 +1,5 @@
-import { displayJalali, formatPhoneDisplay } from '../domain/format.js';
-import { shouldApplySpecialSale, shouldCleanupSoldChannel } from '../domain/logic.js';
+import { displayJalali, formatPhoneDisplay, tehranYmd } from '../domain/format.js';
+import { shouldApplySpecialSale, shouldCleanupSoldChannel, staffNotifyChatIds } from '../domain/logic.js';
 import {
   announceSold, applySpecialSale, clearReserveNotice, listingById, logChange, postSpecialSaleNotice,
   publicOrigin, putSetting, syncChannel
@@ -16,8 +16,9 @@ async function tg(method, body = {}) {
   return response.json();
 }
 
-function tehranDate(now = new Date()) {
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Tehran', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+function sendSucceeded(result) {
+  if (result == null) return true;
+  return result.ok !== false;
 }
 
 function deleted(result) {
@@ -89,7 +90,7 @@ export async function runSpecialSales(q, send = tg) {
 /** به‌روزرسانی متن کانال وقتی تاریخ سند رسیده (شامل فروخته‌شده). */
 export async function refreshDueDocumentChannelPosts(q, send = tg) {
   const rows = await q`SELECT id FROM listings
-    WHERE document_ready_date IS NOT NULL AND document_ready_date <= CURRENT_DATE
+    WHERE document_ready_date IS NOT NULL AND document_ready_date <= (NOW() AT TIME ZONE 'Asia/Tehran')::date
       AND channel_message_id IS NOT NULL AND channel_cleaned_at IS NULL`;
   let count = 0;
   for (const row of rows) {
@@ -104,7 +105,7 @@ export async function refreshDueDocumentChannelPosts(q, send = tg) {
 
 export async function markReadyTransfers(q, send = tg) {
   const rows = await q`SELECT * FROM listings
-    WHERE status IN ('active', 'reserved') AND document_ready_date IS NOT NULL AND document_ready_date <= CURRENT_DATE`;
+    WHERE status IN ('active', 'reserved') AND document_ready_date IS NOT NULL AND document_ready_date <= (NOW() AT TIME ZONE 'Asia/Tehran')::date`;
   let count = 0;
   for (const row of rows) {
     if (row.status === 'reserved') {
@@ -121,23 +122,79 @@ export async function markReadyTransfers(q, send = tg) {
   return count;
 }
 
-export async function remindDocuments(q, send = tg) {
-  const due = await q`SELECT * FROM listings
-    WHERE status = 'sold' AND sale_document_status = 'pending' AND sale_document_due_date IS NOT NULL
-      AND sale_document_due_date <= CURRENT_DATE
-      AND (sale_document_last_reminded_at IS NULL OR sale_document_last_reminded_at::date < CURRENT_DATE)
-    ORDER BY sale_document_due_date, id`;
-  const second = (await q`SELECT * FROM admins WHERE active = true AND priority = 2 ORDER BY priority LIMIT 1`)[0];
-  if (!second) return 0;
-  for (const row of due) {
-    await send('sendMessage', {
-      chat_id: second.telegram_user_id,
-      text: `یادآوری سند\n\nشماره: ${formatPhoneDisplay(row.phone_number, row.phone_display)}\nموعد سند: ${displayJalali(row.sale_document_due_date)}\nچرخه تأخیر: ${Number(row.sale_document_cycle || 0)}\n\nاگر سند زده شد «سند زده شد» را بزن؛ اگر هنوز نه، «تأخیر» را بزن.`,
-      reply_markup: { inline_keyboard: [[{ text: 'سند زده شد', callback_data: `docdone_${row.id}` }, { text: 'تأخیر', callback_data: `docdelay_${row.id}` }]] }
-    });
-    await q`UPDATE listings SET sale_document_last_reminded_at = NOW(), updated_at = NOW() WHERE id = ${row.id}`;
+function saleDocumentReminderText(row) {
+  return [
+    'یادآوری سند',
+    '',
+    `شماره: ${formatPhoneDisplay(row.phone_number, row.phone_display)}`,
+    `موعد سند: ${displayJalali(row.sale_document_due_date)}`,
+    `چرخه تأخیر: ${Number(row.sale_document_cycle || 0)}`,
+    '',
+    'اگر سند زده شد «سند زده شد» را بزن؛ اگر هنوز نه، «تأخیر» را بزن.'
+  ].join('\n');
+}
+
+function saleDocumentReminderMarkup(listingId) {
+  return {
+    inline_keyboard: [[{ text: 'سند زده شد', callback_data: `docdone_${listingId}` }, { text: 'تأخیر', callback_data: `docdelay_${listingId}` }]]
+  };
+}
+
+export async function remindDocuments(q, send = tg, { listingId } = {}) {
+  if (listingId) {
+    await q`UPDATE listings
+      SET sale_document_status = 'pending',
+          sale_document_due_date = COALESCE(sale_document_due_date, document_ready_date, (NOW() AT TIME ZONE 'Asia/Tehran')::date),
+          sale_document_cycle = COALESCE(sale_document_cycle, 0),
+          updated_at = NOW()
+      WHERE id = ${listingId} AND status = 'sold'
+        AND (sale_document_status IS NULL OR sale_document_status NOT IN ('done', 'pending'))
+        AND sale_document_completed_at IS NULL`;
+  } else {
+    await q`UPDATE listings
+      SET sale_document_status = 'pending',
+          sale_document_due_date = COALESCE(sale_document_due_date, document_ready_date, (NOW() AT TIME ZONE 'Asia/Tehran')::date),
+          sale_document_cycle = COALESCE(sale_document_cycle, 0),
+          updated_at = NOW()
+      WHERE status = 'sold'
+        AND (sale_document_status IS NULL OR sale_document_status NOT IN ('done', 'pending'))
+        AND sale_document_completed_at IS NULL`;
   }
-  return due.length;
+
+  const due = listingId
+    ? await q`SELECT * FROM listings
+        WHERE id = ${listingId} AND status = 'sold' AND sale_document_status = 'pending' AND sale_document_due_date IS NOT NULL
+          AND sale_document_due_date <= (NOW() AT TIME ZONE 'Asia/Tehran')::date
+          AND (sale_document_last_reminded_at IS NULL
+            OR (sale_document_last_reminded_at AT TIME ZONE 'Asia/Tehran')::date < (NOW() AT TIME ZONE 'Asia/Tehran')::date)
+        ORDER BY sale_document_due_date, id`
+    : await q`SELECT * FROM listings
+        WHERE status = 'sold' AND sale_document_status = 'pending' AND sale_document_due_date IS NOT NULL
+          AND sale_document_due_date <= (NOW() AT TIME ZONE 'Asia/Tehran')::date
+          AND (sale_document_last_reminded_at IS NULL
+            OR (sale_document_last_reminded_at AT TIME ZONE 'Asia/Tehran')::date < (NOW() AT TIME ZONE 'Asia/Tehran')::date)
+        ORDER BY sale_document_due_date, id`;
+  if (!due.length) return 0;
+
+  const admins = await q`SELECT telegram_user_id, priority FROM admins WHERE active = true ORDER BY priority ASC`;
+  const chats = staffNotifyChatIds(process.env, admins);
+  if (!chats.length) return 0;
+
+  let sent = 0;
+  for (const row of due) {
+    let ok = false;
+    const text = saleDocumentReminderText(row);
+    const reply_markup = saleDocumentReminderMarkup(row.id);
+    for (const chat_id of chats) {
+      const result = await send('sendMessage', { chat_id, text, reply_markup });
+      if (sendSucceeded(result)) ok = true;
+    }
+    if (ok) {
+      await q`UPDATE listings SET sale_document_last_reminded_at = NOW(), updated_at = NOW() WHERE id = ${row.id}`;
+      sent += 1;
+    }
+  }
+  return sent;
 }
 
 export async function handoffPurchases(q, send = tg) {
@@ -157,7 +214,7 @@ export async function handoffPurchases(q, send = tg) {
 }
 
 export async function greetOnce(q, send = tg) {
-  const today = tehranDate();
+  const today = tehranYmd();
   const last = (await q`SELECT value FROM settings WHERE key = 'cron_greeting_on' LIMIT 1`)[0]?.value;
   if (last === today) return 0;
   const admins = await q`SELECT telegram_user_id FROM admins WHERE active = true ORDER BY priority ASC`;

@@ -1,10 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  allow, canAssignOwner, canReleaseReservation, capacityLabel, excelTarget, invoiceDiscount, invoiceMath,
-  isReservationExpired, nextInvoiceNumber, parseExcelAd, parseOwnerSlot, parseStartPayload,
-  listingListPriceToman, parseManualDiscountInput, PERMISSIONS, prefixRank, registrationPlan, reserveAllowed, saleAllowed, shouldApplySpecialSale,
-  shouldCleanupSoldChannel, sortListings,   priceAfterPercentIncrease, specialPrice, validNationalId
+  allow, canAssignOwner, canChangeListingPrice, canReleaseReservation, capacityLabel, excelTarget, invoiceDiscount, invoiceMath,
+  isReservationExpired, nextInvoiceNumber, parseExcelAd, parseListingPriceInput, parseOwnerSlot, parseStartPayload,
+  listingListPriceToman, parseManualDiscountInput, PERMISSIONS, prefixRank, primaryPurchaseAssignee, purchaseResponsibleLabel,
+  registrationPlan, reserveAllowed, saleAllowed, shouldApplySpecialSale, staffNotifyChatIds,
+  shouldCleanupSoldChannel, sortListings, priceAfterPercentIncrease, specialPrice, validNationalId
 } from '../src/domain/logic.js';
 import { channelDocumentReadyLine, displayJalali, isDocumentReadyDue, normalizePhone, parseDateInput, parseListingText, toLatinDigits } from '../src/domain/format.js';
 import { buildInstallmentConfig, parseNumberList } from '../src/domain/installment-config.js';
@@ -26,6 +27,27 @@ test('percent price increase rounds to whole millions', () => {
   assert.equal(priceAfterPercentIncrease(580_000_000, 5), 609_000_000);
   assert.equal(priceAfterPercentIncrease(500_000_000, 10), 550_000_000);
   assert.equal(priceAfterPercentIncrease(100_000_000, 0), null);
+});
+
+test('purchase request notifies all staff admins and assigns priority 1', () => {
+  const admins = [{ telegram_user_id: '8633839153', priority: 1, display_name: 'سامی' }];
+  const assignee = primaryPurchaseAssignee(admins, { OWNER_TELEGRAM_ID: '47314155', CO_OWNER_TELEGRAM_IDS: '186174121' });
+  assert.equal(assignee.telegram_user_id, '8633839153');
+  assert.equal(purchaseResponsibleLabel(assignee, { 1: '@admin1' }), 'سامی');
+  const chats = staffNotifyChatIds({ OWNER_TELEGRAM_ID: '47314155', CO_OWNER_TELEGRAM_IDS: '186174121' }, admins);
+  assert.deepEqual(chats, ['47314155', '186174121', '8633839153']);
+  const fallback = primaryPurchaseAssignee([], { OWNER_TELEGRAM_ID: '47314155' });
+  assert.equal(fallback.telegram_user_id, '47314155');
+});
+
+test('single listing price input accepts million shorthand', () => {
+  assert.equal(parseListingPriceInput('610'), 610_000_000);
+  assert.equal(parseListingPriceInput('610000000'), 610_000_000);
+  assert.equal(parseListingPriceInput('۰۵۸۰'), 580_000_000);
+  assert.equal(parseListingPriceInput('0'), null);
+  assert.equal(canChangeListingPrice({ isOwner: true }), true);
+  assert.equal(canChangeListingPrice({ isOwner: false, allow: () => false }), false);
+  assert.equal(canChangeListingPrice({ isOwner: false, allow: (key) => key === 'settings' }), true);
 });
 
 test('persian labels stay readable', () => {

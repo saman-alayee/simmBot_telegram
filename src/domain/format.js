@@ -108,10 +108,7 @@ export function documentReadyDateIso(value) {
   if (value == null || value === '') return null;
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) return null;
-    const y = value.getUTCFullYear();
-    const m = value.getUTCMonth() + 1;
-    const d = value.getUTCDate();
-    return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    return tehranYmd(value);
   }
   const text = String(value).trim();
   const iso = text.match(/^(\d{4}-\d{2}-\d{2})/);
@@ -139,13 +136,8 @@ export function channelDocumentReadyLine(documentReadyDate, now = new Date()) {
 
 export function displayJalali(value) {
   if (!value) return '-';
-  let date;
-  if (value instanceof Date) {
-    date = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate(), 12));
-  } else {
-    const match = String(value).trim().match(/^(\d{4}-\d{2}-\d{2})/);
-    date = match ? new Date(`${match[1]}T12:00:00Z`) : new Date(value);
-  }
+  const iso = documentReadyDateIso(value);
+  const date = iso ? new Date(`${iso}T12:00:00Z`) : new Date(value);
   if (Number.isNaN(date.getTime())) return '-';
   const parts = jalaliParts(date);
   return `${parts.year}/${String(parts.month).padStart(2, '0')}/${String(parts.day).padStart(2, '0')}`;
@@ -161,9 +153,24 @@ export function displayDateTime(value) {
 }
 
 export function plusDaysISO(days, now = new Date()) {
-  const date = new Date(now);
-  date.setDate(date.getDate() + Number(days));
-  return date.toISOString().slice(0, 10);
+  const [year, month, day] = tehranYmd(now).split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + Number(days)));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** موعد سند فروش: تاریخ آماده‌بودن سند، وگرنه امروز تهران. */
+export function saleDocumentDueFromReady(documentReadyDate, now = new Date()) {
+  return documentReadyDateIso(documentReadyDate) || tehranYmd(now);
+}
+
+export function shouldRemindSaleDocument(row, now = new Date()) {
+  if (!row || row.status !== 'sold' || String(row.sale_document_status || '') !== 'pending') return false;
+  const due = documentReadyDateIso(row.sale_document_due_date);
+  if (!due) return false;
+  const today = tehranYmd(now);
+  if (due > today) return false;
+  if (!row.sale_document_last_reminded_at) return true;
+  return tehranYmd(new Date(row.sale_document_last_reminded_at)) < today;
 }
 
 export function parseDateInput(raw) {

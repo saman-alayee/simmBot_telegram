@@ -7,7 +7,7 @@
     "node": "24.x"
   },
   "scripts": {
-    "test": "node --test ./test/logic.test.js ./test/pdf.test.js ./test/channel-notices.test.js ./test/channel-messages.test.js ./test/excel-import.test.js ./test/bot-commands.test.js ./test/telegram-text.test.js",
+    "test": "node --test ./test/logic.test.js ./test/pdf.test.js ./test/channel-notices.test.js ./test/channel-messages.test.js ./test/excel-import.test.js ./test/bot-commands.test.js ./test/telegram-text.test.js ./test/documents.test.js",
     "test:flows": "node scripts/test/bot-flows.mjs",
     "spec:compliance": "node scripts/test/spec-compliance.mjs",
     "test:all": "node scripts/test/run-all-tests.mjs",

@@ -32,6 +32,23 @@ export function decodePriceUpPercent(token) {
   return Number(token) / 10;
 }
 
+/** قیمت جدید به تومان؛ عدد کوچک‌تر از ۱۰۰۰۰ یعنی میلیون. */
+export function parseListingPriceInput(raw) {
+  const text = toLatinDigits(String(raw ?? '').trim()).replace(/,/g, '').replace(/\s+/g, '');
+  if (!text) return null;
+  const n = Number(text.replace(/[^\d.]/g, ''));
+  if (!Number.isFinite(n) || n <= 0) return null;
+  let toman = n < 10_000 ? Math.round(n * 1_000_000) : Math.round(n);
+  toman = Math.max(1_000_000, Math.round(toman / 1_000_000) * 1_000_000);
+  return toman;
+}
+
+export const PRICE_CHANGE_STATUSES = ['active', 'reserved', 'ready_transfer', 'inactive'];
+
+export function canChangeListingPrice(actor) {
+  return canManualDiscount(actor);
+}
+
 export const PERMISSIONS = {
   add_listing: 'ثبت سیم‌کارت',
   lookup: 'استعلام خط',
@@ -58,6 +75,8 @@ export const FIELD_LABELS = {
   owner_id: 'تغییر مالک',
   warehouse_id: 'تغییر انبار',
   document_ready_date: 'تغییر تاریخ سند',
+  sale_document_status: 'تکمیل سند',
+  sale_document_due_date: 'موعد سند فروش',
   reregister: 'ثبت مجدد',
   special_sale: 'فروش ویژه',
   manual_discount: 'تخفیف دستی',
@@ -67,6 +86,46 @@ export const FIELD_LABELS = {
 
 export function isOwner(uid, ownerId) {
   return String(uid) === String(ownerId);
+}
+
+/** مالک، مالک مشترک، و ادمین‌های فعال — برای یادآوری سند و اعلان‌های مشابه. */
+/** ادمین اولویت ۱ برای واگذاری درخواست خرید؛ اگر ادمین نبود مالک ربات. */
+export function primaryPurchaseAssignee(admins = [], env = process.env) {
+  const first = admins.find((a) => Number(a.priority) === 1) || admins[0] || null;
+  if (first?.telegram_user_id != null && first.telegram_user_id !== '') {
+    return {
+      telegram_user_id: String(first.telegram_user_id),
+      priority: Number(first.priority) || 1,
+      display_name: first.display_name || null
+    };
+  }
+  const owner = String(env.OWNER_TELEGRAM_ID || '').trim();
+  if (owner && owner.toLowerCase() !== 'auto' && /^\d+$/.test(owner)) {
+    return { telegram_user_id: owner, priority: 1, display_name: 'مالک ربات' };
+  }
+  return null;
+}
+
+export function purchaseResponsibleLabel(assignee, adminLabels = {}) {
+  if (assignee?.display_name) return assignee.display_name;
+  const priority = Number(assignee?.priority);
+  if (adminLabels[priority]) return adminLabels[priority];
+  return assignee?.telegram_user_id ? `ادمین ${assignee.telegram_user_id}` : 'ادمین';
+}
+
+export function staffNotifyChatIds(env = process.env, admins = []) {
+  const ids = [];
+  const add = (id) => {
+    const value = String(id || '').trim();
+    if (!value || value.toLowerCase() === 'auto') return;
+    if (!/^\d+$/.test(value)) return;
+    if (!ids.includes(value)) ids.push(value);
+  };
+  add(env.OWNER_TELEGRAM_ID);
+  for (const part of String(env.CO_OWNER_TELEGRAM_IDS || '').split(/[\s,;]+/)) add(part);
+  const sorted = [...admins].sort((a, b) => Number(a.priority || 99) - Number(b.priority || 99));
+  for (const admin of sorted) add(admin.telegram_user_id);
+  return ids;
 }
 
 export function allow(uid, ownerId, permissions, key) {

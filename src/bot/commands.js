@@ -46,7 +46,7 @@ export function staffBotCommands(actor) {
   if (actor.allow('warehouses')) list.push(cmd('warehouses', 'لیست انبارها'));
   if (actor.allow('settings') || actor.isOwner) {
     list.push(cmd('toggleinstallment', 'فعال/غیرفعال فروش اقساطی'));
-    list.push(cmd('priceup', 'افزایش درصدی قیمت — مثال: priceup 5'));
+    list.push(cmd('priceup', 'افزایش درصدی — گروهی یا تکی: priceup 5 0912…'));
   }
   if (actor.allow('admin_management') || actor.isOwner) {
     list.push(cmd('admins', 'لیست ادمین‌ها'),

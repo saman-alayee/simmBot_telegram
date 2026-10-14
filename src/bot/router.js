@@ -10,10 +10,10 @@ import {
 import { syncBotCommandsForChat } from '../bot/commands.js';
 import { buildListingsExcelTemplateBuffer, listingAdsFromExcelBuffer } from '../import/excel-import.js';
 import {
-  ALL_PERMISSIONS, PERMISSIONS, PRICE_INCREASE_SCOPES,
-  canAssignOwner, canManualDiscount, capacityLabel, decodePriceUpPercent, encodePriceUpPercent,
-  listingListPriceToman, parseManualDiscountInput, parseOwnerSlot, parseStartPayload, priceAfterPercentIncrease,
-  reserveAllowed, saleAllowed, validNationalId
+  ALL_PERMISSIONS, PERMISSIONS, PRICE_CHANGE_STATUSES, PRICE_INCREASE_SCOPES,
+  canAssignOwner, canChangeListingPrice, canManualDiscount, capacityLabel, decodePriceUpPercent, encodePriceUpPercent,
+  listingListPriceToman, parseListingPriceInput, parseManualDiscountInput, parseOwnerSlot, parseStartPayload, priceAfterPercentIncrease,
+  primaryPurchaseAssignee, purchaseResponsibleLabel, reserveAllowed, saleAllowed, staffNotifyChatIds, validNationalId
 } from '../domain/logic.js';
 import { formatInstallmentConfigSummary, parseNumberList } from '../domain/installment-config.js';
 import {
@@ -24,11 +24,13 @@ import { invoicePdfFilename } from '../invoice/invoice-template.js';
 import {
   activeOwnersWithUsage, announceSold, applyManualListingDiscount, applySpecialSale, buildInvoice, clearManualListingDiscount,
   clearReserveNotice, clearSoldNotice, historyForPhone, historyLines,
-  getInstallmentConfig, increaseListingPricesByPercent, invoiceDraftPriceSummary, listingById, logChange,
+  getInstallmentConfig, increaseListingPriceByPercent, increaseListingPricesByPercent, applyListingPriceChange,
+  invoiceDraftPriceSummary, listingById, logChange, notifyPurchaseRequestStaff,
   lookupListingByPhone, lookupText,
   openListingByPhone, ownerIdByName, ownerUsage, postReserveNotice, previewPriceIncrease, publicOrigin, putSetting,
   releaseListing, warehouseIdByName,
-  refreshInstallmentChannelPosts, reserveListing, saveListing, sellListing, settingValue, syncChannel, unsellListing
+  refreshInstallmentChannelPosts, reserveListing, saveListing, sellListing, settingValue, syncChannel, unsellListing,
+  completeSaleDocument, delaySaleDocument
 } from './data.js';
 
 const ADMIN_LABELS = { 1: '@samiito0912', 2: '@Samisadeghirb' };
@@ -300,6 +302,8 @@ function staffGuideFull(actor) {
     lines.push('', '▸ مدیریت');
     lines.push('• منو «مدیریت»: تنظیمات اقساط، افزایش قیمت درصدی، کانال، اینستاگرام');
     lines.push('/priceup 5 — افزایش ۵٪ روی خطوط موجود');
+    lines.push('/priceup 5 0912xxxxxxx — افزایش ۵٪ روی همان خط');
+    lines.push('یا از استعلام خط → «افزایش قیمت»');
     lines.push('تخفیف دستی: استعلام خط → «تخفیف دستی» یا /setdiscount 0912… 5%');
   }
   if (actor.allow('add_listing') || actor.isOwner) {
@@ -618,10 +622,10 @@ async function handlePurchaseReply(q, message, actor, text) {
     await say(message.chat.id, 'این سیم‌کارت دیگر موجود نیست.');
     return true;
   }
-  const admins = await q`SELECT * FROM admins WHERE active = true ORDER BY priority ASC LIMIT 2`;
-  const first = admins.find((admin) => Number(admin.priority) === 1) || admins[0]
-    || (ownerTelegramId() ? { telegram_user_id: ownerTelegramId(), priority: 1 } : null);
-  if (!first) { await say(message.chat.id, 'در حال حاضر ادمینی برای دریافت درخواست فعال نیست.'); return true; }
+  const admins = await q`SELECT telegram_user_id, priority, display_name FROM admins WHERE active = true ORDER BY priority ASC`;
+  const assignee = primaryPurchaseAssignee(admins);
+  if (!assignee) { await say(message.chat.id, 'در حال حاضر ادمینی برای دریافت درخواست فعال نیست.'); return true; }
+  const responsibleLabel = purchaseResponsibleLabel(assignee, ADMIN_LABELS);
   const name = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(' ') || null;
   let inserted;
   if (session.request_type === 'installment') {
@@ -636,7 +640,7 @@ async function handlePurchaseReply(q, message, actor, text) {
       ) VALUES(
         ${listing.id}, ${message.from.id}, ${message.from?.username || null}, ${name}, ${phone}, ${months},
         ${listing.price_toman}, ${cash}, ${installment.balance}, ${installment.monthly}, ${installment.monthly * months},
-        'pending', ${first.telegram_user_id}, 1, NOW() + (${inst.requestExpireMinutes}::int * INTERVAL '1 minute'), 'installment', ${percent}
+        'pending', ${assignee.telegram_user_id}, ${assignee.priority}, NOW() + (${inst.requestExpireMinutes}::int * INTERVAL '1 minute'), 'installment', ${percent}
       ) RETURNING id`)[0];
     await say(message.chat.id, `درخواست خرید اقساطی ثبت شد.\nپیش‌پرداخت ${percent}٪: ${money(cash)} تومان\n${months} قسط × ${money(installment.monthly)} تومان`, actor.isStaff ? markup(menuFor(actor)) : markup({ remove_keyboard: true }));
   } else {
@@ -647,23 +651,19 @@ async function handlePurchaseReply(q, message, actor, text) {
       ) VALUES(
         ${listing.id}, ${message.from.id}, ${message.from?.username || null}, ${name}, ${phone}, NULL,
         ${listing.price_toman}, ${listing.price_toman}, 0, NULL, NULL,
-        'pending', ${first.telegram_user_id}, 1, NOW() + (${inst.requestExpireMinutes}::int * INTERVAL '1 minute'), 'cash', NULL
+        'pending', ${assignee.telegram_user_id}, ${assignee.priority}, NOW() + (${inst.requestExpireMinutes}::int * INTERVAL '1 minute'), 'cash', NULL
       ) RETURNING id`)[0];
     await say(message.chat.id, 'درخواست خرید نقدی ثبت شد. ادمین برای هماهنگی با شما تماس می‌گیرد.', actor.isStaff ? markup(menuFor(actor)) : markup({ remove_keyboard: true }));
   }
   const full = (await q`SELECT pr.*, l.phone_number, l.phone_display, l.condition_text FROM purchase_requests pr JOIN listings l ON l.id = pr.listing_id WHERE pr.id = ${inserted.id}`)[0];
-  const notifyIds = [];
-  const addNotify = (id) => {
-    const value = String(id || '').trim();
-    if (value && !notifyIds.includes(value)) notifyIds.push(value);
-  };
-  addNotify(first.telegram_user_id);
-  addNotify(ownerTelegramId());
-  for (const coId of coOwnerTelegramIds()) addNotify(coId);
-  const payload = { text: adminText(full, ADMIN_LABELS[1]), reply_markup: adminKeyboard(inserted.id) };
-  for (const chat of notifyIds) {
-    await tg('sendMessage', { chat_id: chat, ...payload });
-  }
+  const notifyIds = staffNotifyChatIds(process.env, admins);
+  if (!notifyIds.includes(String(assignee.telegram_user_id))) notifyIds.unshift(String(assignee.telegram_user_id));
+  const sent = await notifyPurchaseRequestStaff(tg, {
+    chatIds: notifyIds,
+    text: adminText(full, responsibleLabel),
+    replyMarkup: adminKeyboard(inserted.id)
+  });
+  if (!sent) console.error('purchase_request_notify_none', inserted.id, notifyIds);
   await q`DELETE FROM purchase_contact_sessions WHERE telegram_user_id = ${message.from.id}`;
   return true;
 }
@@ -676,6 +676,7 @@ function adminText(row, label) {
     `وضعیت: ${row.condition_text || '-'}`,
     `قیمت: ${money(row.base_price_toman)} تومان`,
     '',
+    `مشتری: ${row.customer_name || '-'}`,
     `شناسه تلگرام: ${row.customer_telegram_id}`,
     `شماره تماس مشتری: ${row.customer_phone || 'ثبت نشده'}`
   ];
@@ -708,6 +709,10 @@ async function purchaseRequestFull(q, id) {
 
 async function handlePurchaseRequestAction(q, request, callback, actor, action, id) {
   const chatId = callback.message.chat.id;
+  if (!actor.isStaff) {
+    await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'فقط ادمین.' });
+    return;
+  }
   const pr = await purchaseRequestFull(q, id);
   if (!pr) {
     await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'درخواست پیدا نشد.' });
@@ -1114,16 +1119,27 @@ async function handleCommand(q, request, message, actor, text) {
     await say(chatId, `تخفیف دستی\n${formatPhoneDisplay(fresh.phone_number, fresh.phone_display)}\n${money(result.listPrice)} → ${money(result.newPrice)} ت (تخفیف ${money(result.discount)})`);
     return true;
   }
-  if (text.startsWith('/priceup ') && (actor.isOwner || actor.allow('settings'))) {
+  if (text.startsWith('/priceup ') && canChangeListingPrice(actor)) {
     const parts = text.trim().split(/\s+/);
     const percent = Number(toLatinDigits(parts[1] || '').replace(',', '.'));
+    if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+      await say(chatId, 'فرمت: /priceup درصد [active|open|all]\nمثال گروهی: /priceup 5\nمثال تکی: /priceup 5 09121572758');
+      return true;
+    }
+    const phone = normalizePhone(parts.slice(2).join(' '));
+    if (phone) {
+      const listing = await lookupListingByPhone(q, phone.digits);
+      if (!listing) { await say(chatId, 'خط پیدا نشد.'); return true; }
+      if (!PRICE_CHANGE_STATUSES.includes(String(listing.status))) {
+        await say(chatId, 'این خط فروخته است؛ افزایش قیمت ممکن نیست.');
+        return true;
+      }
+      await sendSinglePriceUpMenu(q, chatId, listing, { percent, messageId: null });
+      return true;
+    }
     let scope = 'active';
     if (parts[2] === 'open') scope = 'open';
     else if (parts[2] === 'all') scope = 'all_open';
-    if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
-      await say(chatId, 'فرمت: /priceup درصد [active|open|all]\nمثال: /priceup 5\nمثال: /priceup 10 open');
-      return true;
-    }
     await sendPriceUpConfirm(q, chatId, message, actor, scope, percent);
     return true;
   }
@@ -1134,7 +1150,7 @@ async function loadPendingSessions(q, actor, uid) {
   const [ownerSession, draft, edit, pending] = await Promise.all([
     (actor.isOwner || actor.allow('settings')) ? q`SELECT * FROM owner_action_sessions WHERE telegram_user_id = ${uid} LIMIT 1`.then((rows) => rows[0]) : null,
     actor.allow('invoices') ? q`SELECT * FROM invoice_drafts WHERE telegram_user_id = ${uid} LIMIT 1`.then((rows) => rows[0]) : null,
-    actor.allow('lookup') ? q`SELECT * FROM listing_edit_sessions WHERE telegram_user_id = ${uid} LIMIT 1`.then((rows) => rows[0]) : null,
+    (actor.allow('lookup') || canChangeListingPrice(actor)) ? q`SELECT * FROM listing_edit_sessions WHERE telegram_user_id = ${uid} LIMIT 1`.then((rows) => rows[0]) : null,
     actor.allow('add_listing') ? q`SELECT * FROM listing_registration_sessions WHERE telegram_user_id = ${uid} LIMIT 1`.then((rows) => rows[0]) : null
   ]);
   return { ownerSession, draft, edit, pending };
@@ -1213,7 +1229,7 @@ async function handlePendingText(q, request, message, actor, text) {
     return true;
   }
   if (draft && actor.allow('invoices')) return continueInvoice(q, chatId, uid, draft, text);
-  if (edit && actor.allow('lookup')) {
+  if (edit && (actor.allow('lookup') || canChangeListingPrice(actor))) {
     const listing = (await q`SELECT * FROM listings WHERE id = ${edit.listing_id} LIMIT 1`)[0];
     if (!listing) {
       await q`DELETE FROM listing_edit_sessions WHERE telegram_user_id = ${uid}`;
@@ -1228,6 +1244,58 @@ async function handlePendingText(q, request, message, actor, text) {
       await q`DELETE FROM listing_edit_sessions WHERE telegram_user_id = ${uid}`;
       const fresh = await syncListingChannel(q, request, listing.id);
       await say(chatId, `تاریخ آماده سند تغییر کرد.\n${formatPhoneDisplay(fresh.phone_number, fresh.phone_display)}\n${displayJalali(date)}`);
+      return true;
+    }
+    if ((edit.action === 'priceup' || edit.action === 'priceset') && canChangeListingPrice(actor)) {
+      if (!PRICE_CHANGE_STATUSES.includes(String(listing.status))) {
+        await q`DELETE FROM listing_edit_sessions WHERE telegram_user_id = ${uid}`;
+        await say(chatId, 'این خط فروخته است؛ افزایش قیمت ممکن نیست.');
+        return true;
+      }
+      if (edit.action === 'priceup') {
+        const percent = Number(toLatinDigits(text.trim()).replace(',', '.'));
+        if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+          await say(chatId, 'درصد بین ۰.۱ تا ۱۰۰ وارد کنید.\nمثال: 5 یا 7.5');
+          return true;
+        }
+        const next = priceAfterPercentIncrease(listing.price_toman, percent);
+        if (!next || next === Number(listing.price_toman)) {
+          await say(chatId, 'با این درصد قیمت عوض نمی‌شود.');
+          return true;
+        }
+        const result = await increaseListingPriceByPercent(q, { listingId: listing.id, percent, by: uid });
+        await q`DELETE FROM listing_edit_sessions WHERE telegram_user_id = ${uid}`;
+        if (!result.ok) { await say(chatId, 'افزایش قیمت ممکن نشد.'); return true; }
+        const fresh = await syncListingChannel(q, request, listing.id);
+        await say(chatId, [
+          `افزایش ${percent}٪ روی این خط اعمال شد.`,
+          formatPhoneDisplay(fresh.phone_number, fresh.phone_display),
+          `${money(result.oldPrice)} → ${money(result.newPrice)} تومان`,
+          '',
+          'مقدار قبلی، جدید، زمان و کاربر در تاریخچه ثبت شد.'
+        ].join('\n'), markup(lookupKeyboard(fresh, actor)));
+        return true;
+      }
+      const next = parseListingPriceInput(text);
+      if (!next) {
+        await say(chatId, 'قیمت نامعتبر است.\nمثال: 610 یعنی ۶۱۰ میلیون تومان');
+        return true;
+      }
+      if (next <= Number(listing.price_toman)) {
+        await say(chatId, `قیمت جدید باید بیشتر از قیمت فعلی باشد (${money(listing.price_toman)} تومان).`);
+        return true;
+      }
+      const result = await applyListingPriceChange(q, { listingId: listing.id, newPrice: next, by: uid, reason: 'single_set' });
+      await q`DELETE FROM listing_edit_sessions WHERE telegram_user_id = ${uid}`;
+      if (!result.ok) { await say(chatId, 'تغییر قیمت ممکن نشد.'); return true; }
+      const fresh = await syncListingChannel(q, request, listing.id);
+      await say(chatId, [
+        'قیمت این خط به‌روز شد.',
+        formatPhoneDisplay(fresh.phone_number, fresh.phone_display),
+        `${money(result.oldPrice)} → ${money(result.newPrice)} تومان`,
+        '',
+        'مقدار قبلی، جدید، زمان و کاربر در تاریخچه ثبت شد.'
+      ].join('\n'), markup(lookupKeyboard(fresh, actor)));
       return true;
     }
     if (edit.action === 'discount' && canManualDiscount(actor)) {
@@ -1372,6 +1440,9 @@ function lookupKeyboard(row, actor) {
     } else {
       keyboard.push([{ text: 'لغو فروش (بازگشت به موجود)', callback_data: `lookup_unsell_${id}` }]);
       keyboard.push([{ text: 'تغییر تاریخ سند', callback_data: `lookup_date_${id}` }]);
+    }
+    if (canChangeListingPrice(actor) && PRICE_CHANGE_STATUSES.includes(row.status)) {
+      keyboard.push([{ text: 'افزایش قیمت', callback_data: `lookup_priceup_${id}` }]);
     }
     if (canManualDiscount(actor) && ['active', 'reserved', 'ready_transfer'].includes(row.status)) {
       keyboard.push([
@@ -2069,7 +2140,9 @@ async function handleCallback(q, request, callback) {
   }
   if (data.startsWith('lookup_') || data === 'lookup_back') {
     if (data.includes('history')) { if (!await needs('history')) return; }
-    else if (!await needs('lookup')) return;
+    else if (data.includes('priceup')) {
+      if (!canChangeListingPrice(actor)) { await deny(chatId, callback); return; }
+    } else if (!await needs('lookup')) return;
     await handleLookupCallback(q, request, callback, actor, data);
     return;
   }
@@ -2129,15 +2202,22 @@ async function handleCallback(q, request, callback) {
     return;
   }
   if (data.startsWith('docdone_') || data.startsWith('docdelay_')) {
+    if (!actor.isStaff) { await deny(chatId, callback); return; }
     const id = Number(data.split('_')[1]);
-    if (data.startsWith('docdone_')) {
-      await q`UPDATE listings SET sale_document_status = 'done', sale_document_completed_at = NOW(), updated_at = NOW() WHERE id = ${id}`;
-      await answer('سند ثبت شد.');
-    } else {
-      await q`UPDATE listings SET sale_document_cycle = COALESCE(sale_document_cycle, 0) + 1, sale_document_due_date = COALESCE(sale_document_due_date, CURRENT_DATE) + INTERVAL '7 days', sale_document_last_reminded_at = NULL, updated_at = NOW() WHERE id = ${id}`;
-      await answer('موعد سند ۷ روز عقب رفت.');
+    const done = data.startsWith('docdone_');
+    const row = done
+      ? await completeSaleDocument(q, id, actor.uid)
+      : await delaySaleDocument(q, id, actor.uid);
+    if (!row) {
+      await answer('این سند دیگر قابل تغییر نیست.');
+      return;
     }
-    await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: JSON.stringify({ inline_keyboard: [] }) });
+    const phone = formatPhoneDisplay(row.phone_number, row.phone_display);
+    const summary = done
+      ? `سند تکمیل شد.\n\nشماره: ${phone}`
+      : `موعد سند ۷ روز عقب رفت.\n\nشماره: ${phone}\nموعد جدید: ${displayJalali(row.sale_document_due_date)}`;
+    await answer(done ? 'سند ثبت شد.' : 'موعد سند ۷ روز عقب رفت.');
+    await tg('editMessageText', { chat_id: chatId, message_id: messageId, text: summary, reply_markup: JSON.stringify({ inline_keyboard: [] }) });
     return;
   }
   const prAction = data.match(/^pr_(lookup|sell|invoice)_(\d+)$/);
@@ -2148,8 +2228,12 @@ async function handleCallback(q, request, callback) {
     return;
   }
   const claim = data.match(/^(claim|handoff)_(\d+)$/);
+  if (claim) {
+    if (!actor.isStaff) { await deny(chatId, callback); return; }
+    await handleClaim(q, callback, actor, claim[1], Number(claim[2]));
+    return;
+  }
   if (!claim) { await answer('عملیات نامعتبر'); return; }
-  await handleClaim(q, callback, actor, claim[1], Number(claim[2]));
 }
 
 async function handleRegistrationCallback(q, request, callback, actor, match) {
@@ -2334,7 +2418,83 @@ async function handleLookupCallback(q, request, callback, actor, data) {
     await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'بسته شد' });
     return;
   }
-  const action = data.match(/^lookup_(reserve|release|sell|sellok|deliver|unsell|status|owner|warehouse|date|history|refresh|discount|cleardiscount)_(\d+)$/);
+  const priceupDo = data.match(/^lookup_priceup_do_(\d+)_(\d+)$/);
+  if (priceupDo) {
+    if (!canChangeListingPrice(actor)) { await deny(chatId, callback); return; }
+    const percent = decodePriceUpPercent(priceupDo[1]);
+    const id = Number(priceupDo[2]);
+    const listing = await listingById(q, id);
+    if (!listing) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'سیم‌کارت پیدا نشد.' }); return; }
+    const result = await increaseListingPriceByPercent(q, { listingId: id, percent, by: actor.uid });
+    if (!result.ok) {
+      const hint = result.reason === 'UNCHANGED' ? 'قیمت عوض نشد.' : result.reason === 'STATUS' ? 'این خط فروخته است.' : 'افزایش ممکن نشد.';
+      await tg('answerCallbackQuery', { callback_query_id: callback.id, text: hint });
+      return;
+    }
+    await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'قیمت این خط افزایش یافت.' });
+    const fresh = await syncListingChannel(q, request, id);
+    await presentLookup(q, chatId, actor, fresh, {
+      suffix: `\n\nقیمت: ${money(result.oldPrice)} → ${money(result.newPrice)} تومان\nتاریخچه: مقدار قبلی، جدید، زمان و کاربر ثبت شد.`,
+      withFooter: false
+    });
+    return;
+  }
+  const priceupPct = data.match(/^lookup_priceup_pct_(\d+)_(\d+)$/);
+  if (priceupPct) {
+    if (!canChangeListingPrice(actor)) { await deny(chatId, callback); return; }
+    const percent = decodePriceUpPercent(priceupPct[1]);
+    const listing = await listingById(q, Number(priceupPct[2]));
+    if (!listing) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'سیم‌کارت پیدا نشد.' }); return; }
+    await sendSinglePriceUpMenu(q, chatId, listing, { percent, messageId });
+    await tg('answerCallbackQuery', { callback_query_id: callback.id });
+    return;
+  }
+  const priceupCustom = data.match(/^lookup_priceup_custom_(\d+)$/);
+  if (priceupCustom) {
+    if (!canChangeListingPrice(actor)) { await deny(chatId, callback); return; }
+    const listing = await listingById(q, Number(priceupCustom[1]));
+    if (!listing) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'سیم‌کارت پیدا نشد.' }); return; }
+    await q`INSERT INTO listing_edit_sessions(telegram_user_id, listing_id, action) VALUES(${actor.uid}, ${listing.id}, 'priceup')
+      ON CONFLICT(telegram_user_id) DO UPDATE SET listing_id = EXCLUDED.listing_id, action = 'priceup', created_at = NOW()`;
+    await tg('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text: [
+        'افزایش قیمت این خط — درصد دلخواه',
+        formatPhoneDisplay(listing.phone_number, listing.phone_display),
+        `قیمت فعلی: ${money(listing.price_toman)} تومان`,
+        '',
+        'درصد را بفرستید (۰.۱ تا ۱۰۰). مثال: 5',
+        '/cancel انصراف'
+      ].join('\n')
+    });
+    await tg('answerCallbackQuery', { callback_query_id: callback.id });
+    return;
+  }
+  const priceupAmount = data.match(/^lookup_priceup_amount_(\d+)$/);
+  if (priceupAmount) {
+    if (!canChangeListingPrice(actor)) { await deny(chatId, callback); return; }
+    const listing = await listingById(q, Number(priceupAmount[1]));
+    if (!listing) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'سیم‌کارت پیدا نشد.' }); return; }
+    await q`INSERT INTO listing_edit_sessions(telegram_user_id, listing_id, action) VALUES(${actor.uid}, ${listing.id}, 'priceset')
+      ON CONFLICT(telegram_user_id) DO UPDATE SET listing_id = EXCLUDED.listing_id, action = 'priceset', created_at = NOW()`;
+    await tg('editMessageText', {
+      chat_id: chatId,
+      message_id: messageId,
+      text: [
+        'قیمت جدید این خط',
+        formatPhoneDisplay(listing.phone_number, listing.phone_display),
+        `قیمت فعلی: ${money(listing.price_toman)} تومان`,
+        '',
+        'قیمت جدید را به میلیون بفرستید. مثال: 610',
+        'باید بیشتر از قیمت فعلی باشد.',
+        '/cancel انصراف'
+      ].join('\n')
+    });
+    await tg('answerCallbackQuery', { callback_query_id: callback.id });
+    return;
+  }
+  const action = data.match(/^lookup_(reserve|release|sell|sellok|deliver|unsell|status|owner|warehouse|date|history|refresh|discount|cleardiscount|priceup)_(\d+)$/);
   const setStatus = data.match(/^lookup_setstatus_(\d+)_(active|reserved|sold|inactive)$/);
   const setOwner = data.match(/^lookup_setowner_(\d+)_(\d+)$/);
   const setWarehouse = data.match(/^lookup_setwarehouse_(\d+)_(\d+)$/);
@@ -2438,6 +2598,16 @@ async function handleLookupCallback(q, request, callback, actor, data) {
       await q`INSERT INTO listing_edit_sessions(telegram_user_id, listing_id, action) VALUES(${actor.uid}, ${id}, 'date')
         ON CONFLICT(telegram_user_id) DO UPDATE SET listing_id = EXCLUDED.listing_id, action = 'date', created_at = NOW()`;
       await tg('editMessageText', { chat_id: chatId, message_id: messageId, text: 'تاریخ آماده سند جدید را وارد کنید.\nمثال: 1405/07/25' });
+      await tg('answerCallbackQuery', { callback_query_id: callback.id });
+      return;
+    }
+    if (name === 'priceup') {
+      if (!canChangeListingPrice(actor)) { await deny(chatId, callback); return; }
+      if (!PRICE_CHANGE_STATUSES.includes(String(listing.status))) {
+        await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'این خط فروخته است.' });
+        return;
+      }
+      await sendSinglePriceUpMenu(q, chatId, listing, { messageId });
       await tg('answerCallbackQuery', { callback_query_id: callback.id });
       return;
     }
@@ -2733,6 +2903,43 @@ async function showInvoiceConfirm(q, chatId, uid) {
     '',
     priceBlock
   ].join('\n'), markup({ inline_keyboard: [[{ text: 'صدور PDF', callback_data: `invoice_confirm_${row.listing_id}` }]] }));
+}
+
+async function sendSinglePriceUpMenu(q, chatId, listing, { percent = null, messageId = null } = {}) {
+  const id = listing.id;
+  const current = Number(listing.price_toman);
+  const lines = [
+    'افزایش قیمت این خط',
+    formatPhoneDisplay(listing.phone_number, listing.phone_display),
+    `قیمت فعلی: ${money(current)} تومان`,
+    ''
+  ];
+  let keyboard;
+  if (percent != null) {
+    const next = priceAfterPercentIncrease(current, percent);
+    if (!next || next === current) {
+      const text = 'با این درصد قیمت این خط عوض نمی‌شود.';
+      if (messageId) await tg('editMessageText', { chat_id: chatId, message_id: messageId, text });
+      else await say(chatId, text);
+      return;
+    }
+    lines.push(`درصد: ${percent}٪`, `${money(current)} → ${money(next)} تومان`, '', 'قیمت به نزدیک‌ترین ۱ میلیون تومان گرد می‌شود.');
+    keyboard = [
+      [{ text: '✅ اعمال روی همین خط', callback_data: `lookup_priceup_do_${encodePriceUpPercent(percent)}_${id}` }],
+      [{ text: 'بازگشت', callback_data: `lookup_priceup_${id}` }]
+    ];
+  } else {
+    lines.push('درصد را انتخاب کنید، یا درصد/مبلغ دلخواه بدهید.');
+    keyboard = [
+      [{ text: '+۲٪', callback_data: `lookup_priceup_pct_${encodePriceUpPercent(2)}_${id}` }, { text: '+۵٪', callback_data: `lookup_priceup_pct_${encodePriceUpPercent(5)}_${id}` }],
+      [{ text: '+۱۰٪', callback_data: `lookup_priceup_pct_${encodePriceUpPercent(10)}_${id}` }, { text: '+۱۵٪', callback_data: `lookup_priceup_pct_${encodePriceUpPercent(15)}_${id}` }],
+      [{ text: 'درصد دلخواه', callback_data: `lookup_priceup_custom_${id}` }, { text: 'مبلغ جدید', callback_data: `lookup_priceup_amount_${id}` }],
+      [{ text: 'بازگشت', callback_data: `lookup_refresh_${id}` }]
+    ];
+  }
+  const payload = { chat_id: chatId, text: lines.join('\n'), reply_markup: JSON.stringify({ inline_keyboard: keyboard }) };
+  if (messageId) await tg('editMessageText', { ...payload, message_id: messageId });
+  else await say(chatId, payload.text, { reply_markup: payload.reply_markup });
 }
 
 function priceUpScopeKeyboard() {
@@ -3149,7 +3356,11 @@ async function handleClaim(q, callback, actor, action, id) {
   if (!second) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'ادمین دوم فعال نیست.' }); return; }
   await q`UPDATE purchase_requests SET status = 'pending', assigned_admin = ${second.telegram_user_id}, assigned_priority = 2, expires_at = NOW() + INTERVAL '30 minutes', handoff_notified = true WHERE id = ${id}`;
   const full = (await q`SELECT pr.*, l.phone_number, l.phone_display, l.condition_text FROM purchase_requests pr JOIN listings l ON l.id = pr.listing_id WHERE pr.id = ${id}`)[0];
-  await tg('sendMessage', { chat_id: second.telegram_user_id, text: adminText(full, ADMIN_LABELS[2]), reply_markup: adminKeyboard(id) });
+  await notifyPurchaseRequestStaff(tg, {
+    chatIds: [String(second.telegram_user_id)],
+    text: adminText(full, purchaseResponsibleLabel(second, ADMIN_LABELS)),
+    replyMarkup: adminKeyboard(id)
+  });
   if (row.current_admin_uid) await say(row.current_admin_uid, `درخواست خرید #${id} به ادمین ۲ واگذار شد.`);
   await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: JSON.stringify({ inline_keyboard: [] }) });
   await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'به ادمین ۲ واگذار شد.' });

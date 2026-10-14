@@ -1,7 +1,7 @@
 import {
   botLinkUsername,
-  displayDateTime, documentReadyLabel, formatListingPricePlain, formatPhoneDisplay, isDocumentReadyDue, money,
-  normalizeLookupName, prefixCode
+  displayDateTime, displayJalali, documentReadyLabel, formatListingPricePlain, formatPhoneDisplay, isDocumentReadyDue, money,
+  normalizeLookupName, plusDaysISO, prefixCode, saleDocumentDueFromReady
 } from '../domain/format.js';
 import { buildInstallmentConfig } from '../domain/installment-config.js';
 import { calcUrlFor, channelPurchaseKeyboard, channelText } from '../channel/channel.js';
@@ -9,7 +9,7 @@ import { resolveStoreAddressForInvoice } from '../invoice/invoice-template.js';
 import { loadChannelMessageBundles, loadChannelStatusMessages } from '../channel/channel-messages.js';
 import { sendMessagePayload, utf16Length } from '../telegram/telegram-text.js';
 import {
-  FIELD_LABELS, canAssignOwner, canReleaseReservation, invoiceDiscount, invoiceMath, listingListPriceToman,
+  FIELD_LABELS, PRICE_CHANGE_STATUSES, canAssignOwner, canReleaseReservation, invoiceDiscount, invoiceMath, listingListPriceToman,
   nextInvoiceNumber, priceAfterPercentIncrease, saleAllowed, specialPrice
 } from '../domain/logic.js';
 import { jalaliParts } from '../domain/format.js';
@@ -380,9 +380,20 @@ export async function releaseListing(q, id, uid, { field = 'reserve_release', is
 }
 
 export async function sellListing(q, id, uid) {
+  const due = saleDocumentDueFromReady(null, new Date());
   const rows = await q`
     UPDATE listings AS l
-    SET status = 'sold', sold_at = NOW(), reserved_by = NULL, reserved_at = NULL, reserved_until = NULL, updated_at = NOW()
+    SET status = 'sold',
+        sold_at = NOW(),
+        reserved_by = NULL,
+        reserved_at = NULL,
+        reserved_until = NULL,
+        sale_document_status = 'pending',
+        sale_document_due_date = COALESCE(l.document_ready_date, ${due}::date),
+        sale_document_completed_at = NULL,
+        sale_document_cycle = 0,
+        sale_document_last_reminded_at = NULL,
+        updated_at = NOW()
     FROM (
       SELECT id, status, reserved_by FROM listings
       WHERE id = ${id} AND status IN ('active', 'reserved', 'ready_transfer')
@@ -397,7 +408,8 @@ export async function sellListing(q, id, uid) {
   delete row.prev_reserved_by;
   const logs = [
     logChange(q, { listingId: id, field: 'sale', from: prevStatus, to: 'sold', by: uid }),
-    logChange(q, { listingId: id, field: 'status', from: prevStatus, to: 'sold', by: uid })
+    logChange(q, { listingId: id, field: 'status', from: prevStatus, to: 'sold', by: uid }),
+    logChange(q, { listingId: id, field: 'sale_document_due_date', from: null, to: row.sale_document_due_date, by: uid })
   ];
   if (prevStatus === 'reserved') {
     logs.unshift(logChange(q, { listingId: id, field: 'reserve_release', from: `reserved:${prevReservedBy || ''}`, to: 'sold', by: uid }));
@@ -421,6 +433,10 @@ export async function unsellListing(q, id, uid) {
         sold_at = NULL,
         channel_cleaned_at = NULL,
         sale_document_status = NULL,
+        sale_document_due_date = NULL,
+        sale_document_completed_at = NULL,
+        sale_document_cycle = 0,
+        sale_document_last_reminded_at = NULL,
         updated_at = NOW()
     WHERE id = ${id} AND status = 'sold'
     RETURNING *`;
@@ -431,6 +447,61 @@ export async function unsellListing(q, id, uid) {
     logChange(q, { listingId: id, field: 'status', from: 'sold', to: 'active', by: uid })
   ]);
   return row;
+}
+
+export async function completeSaleDocument(q, id, uid) {
+  const rows = await q`
+    UPDATE listings
+    SET sale_document_status = 'done',
+        sale_document_completed_at = NOW(),
+        updated_at = NOW()
+    WHERE id = ${id}
+      AND status = 'sold'
+      AND COALESCE(sale_document_status, 'pending') <> 'done'
+    RETURNING *`;
+  const row = rows[0];
+  if (!row) return null;
+  await logChange(q, { listingId: id, field: 'sale_document_status', from: 'pending', to: 'done', by: uid });
+  return row;
+}
+
+export async function delaySaleDocument(q, id, uid, days = 7) {
+  const nextDue = plusDaysISO(days);
+  const rows = await q`
+    UPDATE listings AS l
+    SET sale_document_cycle = COALESCE(l.sale_document_cycle, 0) + 1,
+        sale_document_due_date = ${nextDue}::date,
+        sale_document_last_reminded_at = NULL,
+        updated_at = NOW()
+    FROM (
+      SELECT id, sale_document_due_date, sale_document_cycle
+      FROM listings
+      WHERE id = ${id}
+        AND status = 'sold'
+        AND COALESCE(sale_document_status, 'pending') <> 'done'
+    ) AS prev
+    WHERE l.id = prev.id
+    RETURNING l.*, prev.sale_document_due_date AS prev_due`;
+  const row = rows[0];
+  if (!row) return null;
+  const prevDue = row.prev_due;
+  delete row.prev_due;
+  await Promise.all([
+    logChange(q, { listingId: id, field: 'sale_document_due_date', from: prevDue, to: row.sale_document_due_date, by: uid }),
+    logChange(q, { listingId: id, field: 'sale_document_status', from: `cycle:${Number(row.sale_document_cycle) - 1}`, to: `delay:${row.sale_document_cycle}`, by: uid })
+  ]);
+  return row;
+}
+
+function saleDocumentLookupLine(row) {
+  if (row.status !== 'sold') return '';
+  if (row.sale_document_status === 'done') {
+    const when = row.sale_document_completed_at ? ` (${displayDateTime(row.sale_document_completed_at)})` : '';
+    return `سند فروش: تکمیل شد${when}`;
+  }
+  const due = row.sale_document_due_date ? displayJalali(row.sale_document_due_date) : '-';
+  const delay = Number(row.sale_document_cycle) > 0 ? ` — تأخیر ${row.sale_document_cycle}` : '';
+  return `موعد سند فروش: ${due}${delay}`;
 }
 
 export async function announceSold(q, tg, row) {
@@ -476,12 +547,51 @@ export function historyLines(rows, ownerMap, warehouseMap) {
     if (field === 'warehouse_id') return warehouseMap.get(String(value)) || String(value);
     if (field === 'document_ready_date') return displayJalali(value);
     if (field === 'status') return { active: 'موجود', reserved: 'رزرو شده', sold: 'فروخته شده', inactive: 'غیرفعال', ready_transfer: 'آماده انتقال' }[value] || value;
+    if (field === 'price_toman' || field === 'special_sale' || field === 'manual_discount') {
+      const n = Number(value);
+      if (Number.isFinite(n) && String(value).trim() !== '' && !String(value).includes('→')) return `${money(n)} تومان`;
+    }
     return String(value);
   };
   return rows.map((row) => {
     const label = FIELD_LABELS[row.field_name] || row.field_name;
-    return `دوره ${row.cycle_no || 1} — ${label}: ${valueOf(row.field_name, row.old_value)} ← ${valueOf(row.field_name, row.new_value)}\n${displayDateTime(row.changed_at)}`;
+    const who = row.changed_by ? `کاربر ${row.changed_by}` : 'سیستم';
+    return `دوره ${row.cycle_no || 1} — ${label}: ${valueOf(row.field_name, row.old_value)} ← ${valueOf(row.field_name, row.new_value)}\n${displayDateTime(row.changed_at)} — ${who}`;
   }).join('\n\n');
+}
+
+async function recordPriceChange(q, { listingId, oldPrice, newPrice, by, reason }) {
+  if (Number(oldPrice) === Number(newPrice)) return;
+  const oldN = Number(oldPrice);
+  const newN = Number(newPrice);
+  const pct = oldN ? ((newN - oldN) / oldN) * 100 : null;
+  await Promise.all([
+    logChange(q, { listingId, field: 'price_toman', from: oldPrice, to: newPrice, by }),
+    q`INSERT INTO price_history(listing_id, old_price_toman, new_price_toman, change_percent, reason, changed_by)
+      VALUES(${listingId}, ${oldPrice}, ${newPrice}, ${pct}, ${reason}, ${by})`
+  ]);
+}
+
+export async function applyListingPriceChange(q, { listingId, newPrice, by, reason = 'edit' }) {
+  const row = (await q`SELECT * FROM listings WHERE id = ${listingId} LIMIT 1`)[0];
+  if (!row) return { ok: false, reason: 'NOT_FOUND' };
+  if (!PRICE_CHANGE_STATUSES.includes(String(row.status))) return { ok: false, reason: 'STATUS' };
+  const oldPrice = Number(row.price_toman);
+  const next = Math.round(Number(newPrice));
+  if (!Number.isFinite(next) || next < 1_000_000) return { ok: false, reason: 'INVALID' };
+  if (next === oldPrice) return { ok: false, reason: 'UNCHANGED' };
+  const cash = Math.floor(next / 3);
+  const updated = (await q`UPDATE listings SET price_toman = ${next}, cash_amount_toman = ${cash}, updated_at = NOW() WHERE id = ${listingId} RETURNING *`)[0];
+  await recordPriceChange(q, { listingId, oldPrice, newPrice: next, by, reason });
+  return { ok: true, row: updated, oldPrice, newPrice: next };
+}
+
+export async function increaseListingPriceByPercent(q, { listingId, percent, by }) {
+  const row = (await q`SELECT * FROM listings WHERE id = ${listingId} LIMIT 1`)[0];
+  if (!row) return { ok: false, reason: 'NOT_FOUND' };
+  const next = priceAfterPercentIncrease(row.price_toman, percent);
+  if (!next) return { ok: false, reason: 'INVALID' };
+  return applyListingPriceChange(q, { listingId, newPrice: next, by, reason: 'percent_increase' });
 }
 
 const MANUAL_DISCOUNT_STATUSES = ['active', 'reserved', 'ready_transfer'];
@@ -509,7 +619,7 @@ export async function applyManualListingDiscount(q, listingId, parsed, uid) {
       to: `${listPrice}→${newPrice}`,
       by: uid
     }),
-    logChange(q, { listingId, field: 'price_toman', from: row.price_toman, to: newPrice, by: uid })
+    recordPriceChange(q, { listingId, oldPrice: row.price_toman, newPrice, by: uid, reason: 'manual_discount' })
   ]);
   return { ok: true, row: updated, listPrice, newPrice, discount: listPrice - newPrice };
 }
@@ -527,13 +637,16 @@ export async function clearManualListingDiscount(q, listingId, uid) {
       updated_at = NOW()
     WHERE id = ${listingId}
     RETURNING *`)[0];
-  await logChange(q, {
-    listingId,
-    field: 'manual_discount',
-    from: String(row.price_toman),
-    to: String(listPrice),
-    by: uid
-  });
+  await Promise.all([
+    logChange(q, {
+      listingId,
+      field: 'manual_discount',
+      from: String(row.price_toman),
+      to: String(listPrice),
+      by: uid
+    }),
+    recordPriceChange(q, { listingId, oldPrice: row.price_toman, newPrice: listPrice, by: uid, reason: 'clear_discount' })
+  ]);
   return { ok: true, row: updated };
 }
 
@@ -548,8 +661,10 @@ export async function applySpecialSale(q, row) {
     WHERE id = ${row.id} AND status = 'active' AND special_sale_applied_at IS NULL
     RETURNING *`)[0];
   if (!updated) return null;
-  await logChange(q, { listingId: row.id, field: 'special_sale', from: row.price_toman, to: price, by: null });
-  await logChange(q, { listingId: row.id, field: 'price_toman', from: row.price_toman, to: price, by: null });
+  await Promise.all([
+    logChange(q, { listingId: row.id, field: 'special_sale', from: row.price_toman, to: price, by: null }),
+    recordPriceChange(q, { listingId: row.id, oldPrice: row.price_toman, newPrice: price, by: null, reason: 'special_sale' })
+  ]);
   return updated;
 }
 
@@ -662,6 +777,16 @@ export async function previewPriceIncrease(q, { percent, scope }) {
   return { total: rows.length, changed };
 }
 
+export async function notifyPurchaseRequestStaff(send, { chatIds, text, replyMarkup }) {
+  let sent = 0;
+  for (const chat_id of chatIds) {
+    const result = await send('sendMessage', { chat_id, text, reply_markup: replyMarkup });
+    if (result?.ok !== false) sent += 1;
+    else console.error('purchase_request_notify_failed', chat_id, result?.description || result?.error_code || result);
+  }
+  return sent;
+}
+
 export async function increaseListingPricesByPercent(q, { percent, scope, by }) {
   const pct = Number(percent);
   if (!Number.isFinite(pct) || pct <= 0 || pct > 100) throw new Error('INVALID_PERCENT');
@@ -671,13 +796,8 @@ export async function increaseListingPricesByPercent(q, { percent, scope, by }) 
     const oldPrice = Number(row.price_toman);
     const newPrice = priceAfterPercentIncrease(oldPrice, pct);
     if (!newPrice || newPrice === oldPrice) continue;
-    const cash = Math.floor(newPrice / 3);
-    await q`UPDATE listings SET price_toman = ${newPrice}, cash_amount_toman = ${cash}, updated_at = NOW() WHERE id = ${row.id}`;
-    await Promise.all([
-      logChange(q, { listingId: row.id, field: 'price_toman', from: oldPrice, to: newPrice, by }),
-      q`INSERT INTO price_history(listing_id, old_price_toman, new_price_toman, change_percent, reason, changed_by)
-        VALUES(${row.id}, ${oldPrice}, ${newPrice}, ${pct}, 'percent_increase', ${by})`
-    ]);
+    const applied = await applyListingPriceChange(q, { listingId: row.id, newPrice, by, reason: 'percent_increase' });
+    if (!applied.ok) continue;
     updated.push({ id: row.id, phone: row.phone_number, oldPrice, newPrice, status: row.status });
   }
   return { updated, count: updated.length };
@@ -700,6 +820,7 @@ export function lookupText(row) {
     `مالک: ${row.owner_name || '-'}`,
     `انبار: ${row.warehouse_name || '-'}`,
     `تاریخ سند: ${documentReadyLabel(row.document_ready_date)}`,
+    saleDocumentLookupLine(row),
     `رزرو: ${reserved}`,
     `شروع دوره: ${displayDateTime(row.period_started_at)}`,
     row.sold_at ? `زمان فروش: ${displayDateTime(row.sold_at)}` : ''
