@@ -8,7 +8,10 @@ import {
   channelMsgBodyFromMessage, messageBodyMeta, parseSetChannelMsg, parseSetChannelMsgMeta, sendMessagePayload, utf16Length
 } from '../telegram/telegram-text.js';
 import { syncBotCommandsForChat } from '../bot/commands.js';
-import { buildListingsExcelTemplateBuffer, listingAdsFromExcelBuffer } from '../import/excel-import.js';
+import { runExcelChannelQueue } from '../import/excel-channel-queue.js';
+import { analyzeExcelBuffer, buildListingsExcelTemplateBuffer } from '../import/excel-import.js';
+import { formatExcelChannelContinueSummary, clearExcelPending, executeExcelImport, formatExcelImportSummary, loadExcelPending, saveExcelPending } from '../import/excel-run.js';
+import { formatExcelPreviewMessage, validateExcelAds } from '../import/excel-preview.js';
 import {
   ALL_PERMISSIONS, PERMISSIONS, PRICE_CHANGE_STATUSES, PRICE_INCREASE_SCOPES,
   canAssignOwner, canChangeListingPrice, canManualDiscount, capacityLabel, decodePriceUpPercent, encodePriceUpPercent,
@@ -484,7 +487,7 @@ export async function handleUpdate({ q, request, update }) {
       await syncExcel(q, request, message, actor);
     } catch (error) {
       console.error(error);
-      await say(message.chat.id, 'ورود اکسل ناتمام ماند. چند لحظه بعد همین فایل را دوباره بفرستید تا از همان‌جا ادامه پیدا کند.');
+      await say(message.chat.id, 'خطا در پردازش اکسل. فایل را دوباره بفرستید یا بعد از «تأیید و ثبت» دکمه «ادامه انتشار کانال» را بزنید.');
     }
     return;
   }
@@ -1892,122 +1895,90 @@ function isExcelDocument(document) {
   return document.mime_type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 }
 
-function excelResumeKey(uid, fileUniqueId) {
-  return `excel_resume:${uid}:${fileUniqueId || 'file'}`;
+async function downloadTelegramDocument(document) {
+  const file = await tg('getFile', { file_id: document.file_id });
+  if (!file?.ok) return null;
+  const binary = await fetch(`https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.result.file_path}`);
+  return Buffer.from(await binary.arrayBuffer());
+}
+
+function excelPreviewKeyboard() {
+  return markup({
+    inline_keyboard: [
+      [{ text: 'تأیید و ثبت', callback_data: 'excel_confirm' }, { text: 'لغو', callback_data: 'excel_cancel' }]
+    ]
+  });
+}
+
+function excelChannelContinueKeyboard() {
+  return markup({
+    inline_keyboard: [[{ text: 'ادامه انتشار کانال', callback_data: 'excel_channel_cont' }]]
+  });
 }
 
 async function syncExcel(q, request, message, actor) {
   const chatId = message.chat.id;
-  const file = await tg('getFile', { file_id: message.document.file_id });
-  if (!file?.ok) { await say(chatId, 'دریافت فایل از تلگرام ناموفق بود.'); return; }
-  const binary = await fetch(`https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.result.file_path}`);
-  let ads;
+  const buffer = await downloadTelegramDocument(message.document);
+  if (!buffer) {
+    await say(chatId, 'دریافت فایل از تلگرام ناموفق بود.');
+    return;
+  }
+  let analysis;
   try {
-    ads = listingAdsFromExcelBuffer(Buffer.from(await binary.arrayBuffer()));
+    analysis = analyzeExcelBuffer(buffer);
   } catch (error) {
     await say(chatId, `خطا در خواندن Excel: ${error.message || 'فرمت نامعتبر'}`);
     return;
   }
-  if (!ads.length) {
-    await say(chatId, 'هیچ ردیف معتبری پیدا نشد.\nاز /excel قالب را بگیرید؛ برگه اول باید «خطوط» باشد و ستون‌های سیم‌کارت و قیمت پر شوند.');
+  if (!analysis.ads.length) {
+    await say(chatId, 'هیچ ردیف معتبری پیدا نشد.\nاز /excel قالب را بگیرید؛ برگه «خطوط» و ستون‌های سیم‌کارت و قیمت را پر کنید.');
     return;
   }
-  const resumeKey = excelResumeKey(actor.uid, message.document.file_unique_id);
-  const savedIndex = Number(await settingValue(q, resumeKey, '0')) || 0;
-  const start = savedIndex > 0 && savedIndex < ads.length ? savedIndex : 0;
   if (!String(process.env.CHANNEL_ID || '').trim()) {
-    await say(chatId, 'CHANNEL_ID روی سرور تنظیم نشده؛ خطوط در دیتابیس ثبت می‌شوند ولی در کانال منتشر نمی‌شوند.');
+    await say(chatId, 'CHANNEL_ID روی سرور تنظیم نشده؛ بعد از ثبت، در کانال منتشر نمی‌شود.');
   }
-  await say(chatId, start
-    ? `ادامهٔ ورود اکسل از ردیف ${start + 1} از ${ads.length}…`
-    : `در حال ثبت اکسل (${ads.length} ردیف)…`);
-  let created = 0, updated = 0, failed = 0, channelOk = 0, channelMiss = 0;
-  const missingOwners = new Set();
-  const missingWarehouses = new Set();
-  let ownerFull = 0;
-  let lastChannelError = '';
-  let index = start;
-  const deadline = Date.now() + 18_000;
-  const origin = publicOrigin(request);
+  const validation = await validateExcelAds(q, analysis.ads);
+  const previewText = formatExcelPreviewMessage(analysis, validation);
+  await saveExcelPending(q, actor.uid, {
+    fileId: message.document.file_id,
+    fileUniqueId: message.document.file_unique_id,
+    fileName: message.document.file_name || 'import.xlsx',
+    chatId,
+    ads: analysis.ads
+  });
+  await say(chatId, previewText, excelPreviewKeyboard());
+}
+
+async function confirmExcelImport(q, request, actor, chatId) {
+  const pending = await loadExcelPending(q, actor.uid);
+  if (!pending?.ads?.length) {
+    await say(chatId, 'پیش‌نمایش اکسل منقضی شده. فایل .xlsx را دوباره بفرستید.');
+    return;
+  }
+  await clearExcelPending(q, actor.uid);
+  await say(chatId, `در حال ثبت ${pending.ads.length} ردیف در دیتابیس…`);
+  const result = await executeExcelImport(q, request, tg, actor, chatId, pending.ads, {
+    label: pending.fileName || ''
+  });
+  const summary = formatExcelImportSummary(result);
+  const kb = result.channelPass.done ? undefined : excelChannelContinueKeyboard();
+  await say(chatId, summary, kb);
+}
+
+async function continueExcelChannel(q, request, actor, chatId) {
   const installmentConfig = await getInstallmentConfig(q).catch(() => null);
-  for (; index < ads.length; index += 1) {
-    if (Date.now() >= deadline) break;
-    const ad = ads[index];
-    try {
-      let ownerId;
-      let warehouseId;
-      if (ad.ownerName) {
-        ownerId = await ownerIdByName(q, ad.ownerName);
-        if (!ownerId) {
-          missingOwners.add(ad.ownerName);
-          throw new Error('OWNER_MISSING');
-        }
-      }
-      if (ad.warehouseName) {
-        warehouseId = await warehouseIdByName(q, ad.warehouseName);
-        if (!warehouseId) {
-          missingWarehouses.add(ad.warehouseName);
-          throw new Error('WAREHOUSE_MISSING');
-        }
-      }
-      const saved = await saveListing(q, {
-        phone: ad.phone,
-        displayPhone: ad.displayPhone,
-        price: ad.price,
-        condition: ad.condition,
-        ownerId,
-        warehouseId,
-        date: ad.documentDate ?? undefined,
-        by: actor.uid
-      });
-      const fresh = await listingById(q, saved.row.id);
-      let sent = await syncChannel(q, tg, fresh, origin, installmentConfig);
-      const retryAfter = Number(sent?.parameters?.retry_after || 0);
-      if (!sent?.ok && retryAfter > 0) {
-        const waitMs = Math.min(retryAfter * 1000, Math.max(0, deadline - Date.now() - 500));
-        if (waitMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, waitMs));
-          sent = await syncChannel(q, tg, fresh, origin, installmentConfig);
-        }
-      }
-      const published = sent?.ok || /not modified/i.test(String(sent?.description || ''));
-      if (published) channelOk += 1;
-      else {
-        channelMiss += 1;
-        lastChannelError = String(sent?.description || sent?.error_code || 'unknown');
-      }
-      if (saved.mode === 'create') created += 1; else updated += 1;
-    } catch (error) {
-      failed += 1;
-      if (error?.message === 'OWNER_FULL') ownerFull += 1;
-      console.error('excel row failed', ad?.phone, error?.message || error);
-    }
+  const channelPass = await runExcelChannelQueue(q, tg, actor.uid, {
+    deadlineMs: 28000,
+    origin: publicOrigin(request),
+    installmentConfig
+  });
+  if (!channelPass.synced && channelPass.done) {
+    await say(chatId, 'صف انتشار کانال خالی است.');
+    return;
   }
-  const finished = index >= ads.length;
-  if (finished) await q`DELETE FROM settings WHERE key = ${resumeKey}`;
-  else await putSetting(q, resumeKey, String(index));
-  const ownerHint = missingOwners.size
-    ? `مالک پیدا نشد (نام باید دقیقاً مثل /owners باشد؛ یا ستون مالک را خالی بگذارید):\n${[...missingOwners].slice(0, 8).join(' · ')}`
-    : '';
-  const whHint = missingWarehouses.size
-    ? `انبار پیدا نشد (نام باید دقیقاً مثل انبارهای بات باشد؛ یا ستون انبار را خالی بگذارید):\n${[...missingWarehouses].slice(0, 8).join(' · ')}`
-    : '';
-  const channelHint = channelMiss && lastChannelError
-    ? `علت کانال: ${lastChannelError}`
-    : '';
-  const summary = [
-    finished ? 'ورود اکسل تمام شد.' : 'بخشی از اکسل ثبت شد.',
-    `این مرحله: ردیف ${start + 1} تا ${Math.max(start + 1, index)} از ${ads.length}`,
-    `ثبت جدید: ${created}`,
-    `به‌روزرسانی خط باز: ${updated}`,
-    `خطا: ${failed}${ownerFull ? ` (شامل ${ownerFull} سقف مالک)` : ''}`,
-    `کانال — منتشر/به‌روز: ${channelOk} · منتشر نشد: ${channelMiss}`,
-    channelHint,
-    ownerHint,
-    whHint,
-    finished ? '' : 'همین فایل را دوباره بفرستید تا بقیهٔ ردیف‌ها ادامه پیدا کند.'
-  ].filter(Boolean).join('\n').slice(0, 3500);
-  await say(chatId, summary);
+  const summary = formatExcelChannelContinueSummary(channelPass);
+  const kb = channelPass.done ? undefined : excelChannelContinueKeyboard();
+  await say(chatId, summary, kb);
 }
 
 async function continueInvoice(q, chatId, uid, draft, text) {
@@ -2169,6 +2140,22 @@ async function handleCallback(q, request, callback) {
     return false;
   };
 
+  if (data === 'excel_confirm' || data === 'excel_cancel' || data === 'excel_channel_cont') {
+    if (!(actor.isOwner || actor.allow('add_listing'))) { await deny(chatId, callback); return; }
+    if (data === 'excel_cancel') {
+      await clearExcelPending(q, actor.uid);
+      await answer('ورود اکسل لغو شد.');
+      return;
+    }
+    if (data === 'excel_confirm') {
+      await answer('ثبت در حال انجام…');
+      await confirmExcelImport(q, request, actor, chatId);
+      return;
+    }
+    await answer('ادامهٔ کانال…');
+    await continueExcelChannel(q, request, actor, chatId);
+    return;
+  }
   const registration = data.match(/^(regowner|regwh|regdate)_(\d+)(?:_(\d+|default))?$/);
   if (registration) {
     if (!await needs('add_listing')) return;

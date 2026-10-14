@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { normalizeLookupName, parseDateInput } from '../src/domain/format.js';
 import { parseExcelAd } from '../src/domain/logic.js';
-import { buildListingsExcelTemplateBuffer, listingAdsFromExcelBuffer } from '../src/import/excel-import.js';
+import { analyzeExcelBuffer, buildListingsExcelTemplateBuffer, listingAdsFromExcelBuffer } from '../src/import/excel-import.js';
 
 test('parseExcelAd accepts document date column', () => {
   const ad = parseExcelAd({
@@ -40,4 +40,11 @@ test('bundled excel template parses sample rows', () => {
   assert.equal(ads[0].price, 580000000);
   assert.equal(ads[0].documentDate, parseDateInput('1405/07/25'));
   assert.equal(ads[1].phone, '09124561595');
+});
+
+test('analyzeExcelBuffer reports duplicate phones and keeps last row', () => {
+  const analysis = analyzeExcelBuffer(buildListingsExcelTemplateBuffer());
+  assert.equal(analysis.ads.length, 2);
+  assert.equal(analysis.invalidRows.length, 0);
+  assert.equal(analysis.duplicatePhones.length, 0);
 });
