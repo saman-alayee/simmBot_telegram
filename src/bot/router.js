@@ -1203,7 +1203,7 @@ async function handlePendingText(q, request, message, actor, text) {
   const chatId = message.chat.id;
   const uid = actor.uid;
   const { ownerSession, draft, edit, pending } = await loadPendingSessions(q, actor, uid);
-  if (ownerSession?.action === 'limit') {
+  if (ownerSession?.action === 'limit' && edit?.action !== 'note') {
     if (!canManageOwnerCaps(actor)) {
       await say(chatId, 'تنظیم سقف مالک فقط برای مالک ربات یا «مدیریت ادمین‌ها» است.');
       return true;
@@ -1280,6 +1280,21 @@ async function handlePendingText(q, request, message, actor, text) {
     if (!listing) {
       await q`DELETE FROM listing_edit_sessions WHERE telegram_user_id = ${uid}`;
       await say(chatId, 'سیم‌کارت پیدا نشد.');
+      return true;
+    }
+    if (edit.action === 'note' && (actor.isOwner || actor.isStaff)) {
+      const note = text.trim() === '-' ? '' : text.trim().replace(/\s+/g, ' ');
+      if (note.length > 200) {
+        await say(chatId, 'توضیحات حداکثر ۲۰۰ کاراکتر باشد.\n/cancel انصراف');
+        return true;
+      }
+      await q`UPDATE listings SET public_note = ${note || null}, updated_at = NOW() WHERE id = ${listing.id}`;
+      await logChange(q, { listingId: listing.id, field: 'public_note', from: listing.public_note, to: note || null, by: uid });
+      await q`DELETE FROM listing_edit_sessions WHERE telegram_user_id = ${uid}`;
+      const fresh = await syncListingChannel(q, request, listing.id);
+      await say(chatId, note
+        ? `توضیحات کانال ثبت شد.\n${formatPhoneDisplay(fresh.phone_number, fresh.phone_display)}\n${note}`
+        : `توضیحات کانال پاک شد.\n${formatPhoneDisplay(fresh.phone_number, fresh.phone_display)}`, markup(lookupKeyboard(fresh, actor)));
       return true;
     }
     if (edit.action === 'date') {
@@ -1483,9 +1498,10 @@ function lookupKeyboard(row, actor) {
     if (row.status !== 'sold') {
       keyboard.push([{ text: 'تغییر وضعیت', callback_data: `lookup_status_${id}` }, { text: 'تغییر مالک', callback_data: `lookup_owner_${id}` }]);
       keyboard.push([{ text: 'تغییر انبار', callback_data: `lookup_warehouse_${id}` }, { text: 'تغییر تاریخ سند', callback_data: `lookup_date_${id}` }]);
+      keyboard.push([{ text: 'توضیحات کانال', callback_data: `lookup_note_${id}` }]);
     } else {
       keyboard.push([{ text: 'لغو فروش (بازگشت به موجود)', callback_data: `lookup_unsell_${id}` }]);
-      keyboard.push([{ text: 'تغییر تاریخ سند', callback_data: `lookup_date_${id}` }]);
+      keyboard.push([{ text: 'تغییر تاریخ سند', callback_data: `lookup_date_${id}` }, { text: 'توضیحات کانال', callback_data: `lookup_note_${id}` }]);
     }
     if (canChangeListingPrice(actor) && PRICE_CHANGE_STATUSES.includes(row.status)) {
       keyboard.push([{ text: 'افزایش قیمت', callback_data: `lookup_priceup_${id}` }]);
@@ -2572,7 +2588,7 @@ async function handleLookupCallback(q, request, callback, actor, data) {
     await tg('answerCallbackQuery', { callback_query_id: callback.id });
     return;
   }
-  const action = data.match(/^lookup_(reserve|release|sell|sellok|deliver|unsell|status|owner|warehouse|date|history|refresh|discount|cleardiscount|priceup)_(\d+)$/);
+  const action = data.match(/^lookup_(reserve|release|sell|sellok|deliver|unsell|status|owner|warehouse|date|note|history|refresh|discount|cleardiscount|priceup)_(\d+)$/);
   const setStatus = data.match(/^lookup_setstatus_(\d+)_(active|reserved|sold|inactive)$/);
   const setOwner = data.match(/^lookup_setowner_(\d+)_(\d+)$/);
   const setWarehouse = data.match(/^lookup_setwarehouse_(\d+)_(\d+)$/);
@@ -2669,6 +2685,24 @@ async function handleLookupCallback(q, request, callback, actor, data) {
       }
       buttons.push([{ text: 'بازگشت', callback_data: `lookup_refresh_${id}` }]);
       await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: JSON.stringify({ inline_keyboard: buttons }) });
+      await tg('answerCallbackQuery', { callback_query_id: callback.id });
+      return;
+    }
+    if (name === 'note') {
+      if (!(actor.isOwner || actor.isStaff)) { await deny(chatId, callback); return; }
+      await q`INSERT INTO listing_edit_sessions(telegram_user_id, listing_id, action) VALUES(${String(actor.uid)}, ${id}, 'note')
+        ON CONFLICT(telegram_user_id) DO UPDATE SET listing_id = EXCLUDED.listing_id, action = 'note', created_at = NOW()`;
+      await tg('editMessageText', {
+        chat_id: chatId,
+        message_id: messageId,
+        text: [
+          'توضیحات کانال (خط خالی زیر قیمت) را بفرستید.',
+          listing.public_note ? `فعلی: ${listing.public_note}` : 'فعلی: خالی',
+          '',
+          'حداکثر ۲۰۰ کاراکتر. برای پاک کردن: -',
+          '/cancel انصراف'
+        ].join('\n')
+      });
       await tg('answerCallbackQuery', { callback_query_id: callback.id });
       return;
     }

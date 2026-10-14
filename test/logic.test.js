@@ -179,6 +179,8 @@ test('excel rows update the open cycle and do not invent a sold overwrite', () =
   const ad = parseExcelAd({ 'سیم‌کارت': '09120000000', 'قیمت': '120000000', 'وضعیت': 'کارکرده', 'توضیحات': 'رند' });
   assert.equal(ad.phone, '09120000000');
   assert.equal(ad.price, 120000000);
+  assert.equal(ad.condition, 'کارکرده');
+  assert.equal(ad.publicNote, 'رند');
   assert.equal(parseExcelAd({ 'سیم‌کارت': '09130000000', 'قیمت': '10' }), null);
 });
 

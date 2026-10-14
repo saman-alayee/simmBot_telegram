@@ -18,7 +18,9 @@ export function channelText(row, { bot, calcUrl, installmentEnabled = true, stat
     `💵 ${formatListingPriceHtml(row)}`
   ];
   if (row.special_sale_applied_at) lines.push(statusHtml('channel_msg_special_badge'));
-  lines.push('', esc(renderChannelDocumentLine(row.document_ready_date, msgs)));
+  const note = String(row.public_note || '').trim();
+  lines.push(note ? esc(note) : '');
+  lines.push(esc(renderChannelDocumentLine(row.document_ready_date, msgs)));
   if (row.status === 'reserved') lines.push(statusHtml('channel_msg_reserved'));
   if (row.status === 'ready_transfer') lines.push(statusHtml('channel_msg_ready_transfer'));
   if (row.status === 'sold') lines.push(statusHtml('channel_msg_sold'));

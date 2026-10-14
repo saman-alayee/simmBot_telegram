@@ -292,13 +292,16 @@ export async function saveListing(q, input) {
     }
   }
   const cash = Math.floor(Number(input.price) / 3);
+  const publicNote = input.publicNote === undefined ? undefined : (String(input.publicNote || '').trim() || null);
   if (open) {
     const nextStatus = ['reserved', 'ready_transfer'].includes(open.status) ? open.status : 'active';
+    const noteValue = publicNote === undefined ? open.public_note ?? null : publicNote;
     const updated = (await q`UPDATE listings SET
       phone_display = ${input.displayPhone},
       prefix_code = ${prefixCode(input.phone)},
       price_toman = ${input.price},
       condition_text = ${input.condition},
+      public_note = ${noteValue},
       payment_terms = 'الباقی ۲ تا ۸ ماهه',
       cash_amount_toman = ${cash},
       owner_id = ${ownerId},
@@ -311,6 +314,7 @@ export async function saveListing(q, input) {
     await Promise.all([
       logChange(q, { listingId: updated.id, field: 'price_toman', from: open.price_toman, to: input.price, by: input.by }),
       logChange(q, { listingId: updated.id, field: 'condition_text', from: open.condition_text, to: input.condition, by: input.by }),
+      logChange(q, { listingId: updated.id, field: 'public_note', from: open.public_note, to: noteValue, by: input.by }),
       logChange(q, { listingId: updated.id, field: 'owner_id', from: open.owner_id, to: ownerId, by: input.by }),
       logChange(q, { listingId: updated.id, field: 'warehouse_id', from: open.warehouse_id, to: warehouseId, by: input.by }),
       logChange(q, { listingId: updated.id, field: 'document_ready_date', from: open.document_ready_date, to: readyDate, by: input.by }),
@@ -331,11 +335,12 @@ export async function saveListing(q, input) {
   const cycle = Number(cycleRow[0]?.cycle || 0) + 1;
   const previousSold = previousSoldRows[0];
   const inserted = (await q`INSERT INTO listings(
-      phone_number, phone_display, prefix_code, price_toman, condition_text, payment_terms,
+      phone_number, phone_display, prefix_code, price_toman, condition_text, public_note, payment_terms,
       cash_amount_toman, created_by, owner_id, warehouse_id, document_ready_date, status,
       cycle_no, period_started_at
     ) VALUES(
       ${input.phone}, ${input.displayPhone}, ${prefixCode(input.phone)}, ${input.price}, ${input.condition},
+      ${publicNote === undefined ? null : publicNote},
       'الباقی ۲ تا ۸ ماهه', ${cash}, ${input.by}, ${ownerId}, ${warehouseId}, ${readyDate}, 'active', ${cycle}, NOW()
     ) RETURNING *`)[0];
   await logChange(q, { listingId: inserted.id, field: 'created', from: null, to: input.phone, by: input.by });
@@ -820,6 +825,7 @@ export function lookupText(row) {
     `مالک: ${row.owner_name || '-'}`,
     `انبار: ${row.warehouse_name || '-'}`,
     `تاریخ سند: ${documentReadyLabel(row.document_ready_date)}`,
+    `توضیحات کانال: ${row.public_note || '-'}`,
     saleDocumentLookupLine(row),
     `رزرو: ${reserved}`,
     `شروع دوره: ${displayDateTime(row.period_started_at)}`,

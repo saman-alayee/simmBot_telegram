@@ -34,6 +34,13 @@ test('channelText uses all customizable channel strings', () => {
   assert.match(text, /سند: /);
   assert.match(text, />اقساط</);
   assert.match(text, />نقد</);
+  const withNote = channelText({ ...row, public_note: 'خوش‌قیمت، تحویل فوری' }, {
+    bot: 'TestBot',
+    calcUrl: 'https://example.com/calc',
+    installmentEnabled: true,
+    statusMessages: msgs
+  });
+  assert.match(withNote, /خوش‌قیمت، تحویل فوری/);
   const keyboard = channelPurchaseKeyboard(row, { bot: 'SamiSIM0912Bot', calcUrl: 'https://example.com/calc', installmentEnabled: true, statusMessages: msgs });
   assert.equal(keyboard.inline_keyboard[0][1].url, 'https://t.me/SamiSIM0912Bot?start=cash_1');
   assert.equal(keyboard.inline_keyboard[0][1].text, 'نقد');

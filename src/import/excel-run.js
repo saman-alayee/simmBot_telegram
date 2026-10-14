@@ -69,6 +69,7 @@ export async function executeExcelImport(q, request, tg, actor, chatId, ads, { l
         ownerId,
         warehouseId,
         date: ad.documentDate ?? undefined,
+        publicNote: ad.publicNote ?? null,
         by: actor.uid
       });
       listingIds.push(saved.row.id);

@@ -98,7 +98,8 @@ export const FIELD_LABELS = {
   special_sale: 'فروش ویژه',
   manual_discount: 'تخفیف دستی',
   price_toman: 'تغییر قیمت',
-  condition_text: 'تغییر توضیحات'
+  condition_text: 'تغییر توضیحات',
+  public_note: 'توضیحات کانال'
 };
 
 export function isOwner(uid, ownerId) {
@@ -414,7 +415,8 @@ export function parseExcelAd(row) {
   if (!Number.isFinite(price) || price <= 0) return null;
   const status = String(source['وضعیت'] || '').trim();
   const note = String(source['توضیحات'] || '').trim();
-  const condition = [status, note && note !== '-' ? note : ''].filter(Boolean).join(' / ') || 'کارکرده';
+  const publicNote = note && note !== '-' ? note : null;
+  const condition = status || 'کارکرده';
   const dateRaw = source['تاریخ سند'] ?? source['تاریخ آماده سند'] ?? '';
   const dateText = String(dateRaw ?? '').trim();
   let documentDate = null;
@@ -427,6 +429,7 @@ export function parseExcelAd(row) {
     displayPhone: formatPhoneDigits(digits) || String(phoneRaw).trim(),
     price: Math.round(price),
     condition,
+    publicNote,
     ownerName: excelLookupName(source['مالک']),
     warehouseName: excelLookupName(source['انبار']),
     documentDate

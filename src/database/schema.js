@@ -61,6 +61,7 @@ async function applySchema(q) {
     `ALTER TABLE purchase_requests ALTER COLUMN total_installment_toman DROP NOT NULL`,
     `ALTER TABLE admins ADD COLUMN IF NOT EXISTS permissions JSONB NOT NULL DEFAULT '{}'::jsonb`,
     `ALTER TABLE owners ADD COLUMN IF NOT EXISTS max_line_slots INTEGER NOT NULL DEFAULT 10`,
+    `ALTER TABLE listings ADD COLUMN IF NOT EXISTS public_note TEXT`,
     `CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
