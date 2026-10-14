@@ -1,6 +1,5 @@
-import { getInstallmentConfig } from '../domain/installment-config.js';
 import {
-  ownerIdByName, publicOrigin, putSetting, saveListing, settingValue, warehouseIdByName
+  getInstallmentConfig, ownerIdByName, publicOrigin, putSetting, saveListing, settingValue, warehouseIdByName
 } from '../bot/data.js';
 import { runExcelChannelQueue, saveExcelChannelQueue } from './excel-channel-queue.js';
 
