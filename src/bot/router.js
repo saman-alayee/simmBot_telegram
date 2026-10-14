@@ -964,7 +964,7 @@ async function handleCommand(q, request, message, actor, text) {
   if (text.startsWith('/removeowner ') && actor.isOwner) {
     const id = Number(text.split(/\s+/)[1]);
     if (!id) { await say(chatId, 'فرمت: /removeowner ID'); return true; }
-    await q`UPDATE owners SET active = false, updated_at = NOW() WHERE id = ${id}`;
+    await q`UPDATE owners SET active = false WHERE id = ${id}`;
     await say(chatId, 'مالک غیرفعال شد.');
     return true;
   }
@@ -1672,13 +1672,18 @@ async function handleOwnerLimitText(q, chatId, uid, ownerSession, text) {
     await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${String(uid)}`;
     return true;
   }
-  const applied = await applyOwnerCap(q, ownerId, slots);
-  if (!applied.ok) {
-    await say(chatId, applied.error);
-    return true;
+  try {
+    const applied = await applyOwnerCap(q, ownerId, slots);
+    if (!applied.ok) {
+      await say(chatId, applied.error);
+      return true;
+    }
+    await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${String(uid)}`;
+    await say(chatId, `سقف «${applied.owner.name}» شد ${applied.owner.used} از ${slots}.`);
+  } catch (error) {
+    console.error('owner cap', error);
+    await say(chatId, `ثبت سقف انجام نشد: ${error.message || error}`);
   }
-  await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${String(uid)}`;
-  await say(chatId, `سقف «${applied.owner.name}» شد ${applied.owner.used} از ${slots}.`);
   return true;
 }
 
@@ -1688,7 +1693,7 @@ async function applyOwnerCap(q, ownerId, slots) {
   const used = Number(owner.used || 0);
   if (!Number.isInteger(slots) || slots < 0 || slots > 100000) return { ok: false, error: 'سقف باید یک عدد صحیح بین ۰ تا ۱۰۰۰۰۰ باشد.' };
   if (slots < used) return { ok: false, error: `این مالک ${used} خط باز دارد. سقف نمی‌تواند کمتر از ${used} باشد.` };
-  await q`UPDATE owners SET max_line_slots = ${slots}, updated_at = NOW() WHERE id = ${ownerId}`;
+  await q`UPDATE owners SET max_line_slots = ${slots} WHERE id = ${ownerId}`;
   return { ok: true, owner: { ...owner, max_line_slots: slots } };
 }
 
@@ -2369,7 +2374,7 @@ async function handleOwnerCallback(q, callback, actor, data) {
     return;
   }
   const toggle = data.match(/^owner_toggle_(\d+)$/);
-  if (toggle) { await q`UPDATE owners SET active = NOT active, updated_at = NOW() WHERE id = ${Number(toggle[1])}`; await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'وضعیت مالک تغییر کرد.' }); return; }
+  if (toggle) { await q`UPDATE owners SET active = NOT active WHERE id = ${Number(toggle[1])}`; await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'وضعیت مالک تغییر کرد.' }); return; }
   const limit = data.match(/^owner_limit_(\d+)$/);
   if (limit) {
     const owner = await loadOwnerCard(q, Number(limit[1]));
