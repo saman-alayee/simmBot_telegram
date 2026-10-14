@@ -240,6 +240,7 @@ async function actorOf(q, uid) {
   let isOwner = ownerIds.has(String(uid));
   let admin = isOwner ? null : (await q`SELECT * FROM admins WHERE telegram_user_id = ${uid} AND active = true LIMIT 1`)[0] || null;
   if (!isOwner && admin?.permissions?.bot_owner === true) isOwner = true;
+  if (!isOwner && admin?.permissions?.bot_owner === 'true') isOwner = true;
   const permissions = admin?.permissions || {};
   return {
     uid,
@@ -249,6 +250,11 @@ async function actorOf(q, uid) {
     isStaff: isOwner || Boolean(admin),
     allow(key) { return isOwner || permissions[key] === true; }
   };
+}
+
+/** مدیریت مالکین (سقف، افزودن، …) — نه فقط مشاهده */
+function canManageOwnerCaps(actor) {
+  return actor.isOwner || actor.allow('admin_management');
 }
 
 function staffRoleLabel(actor) {
@@ -561,8 +567,9 @@ export async function handleUpdate({ q, request, update }) {
 }
 
 async function clearPending(q, uid) {
+  const uidKey = String(uid);
   await Promise.all([
-    q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${uid}`,
+    q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${uidKey}`,
     q`DELETE FROM invoice_drafts WHERE telegram_user_id = ${uid}`,
     q`DELETE FROM listing_edit_sessions WHERE telegram_user_id = ${uid}`,
     q`DELETE FROM listing_registration_sessions WHERE telegram_user_id = ${uid}`,
@@ -1182,8 +1189,9 @@ async function handleCommand(q, request, message, actor, text) {
 }
 
 async function loadPendingSessions(q, actor, uid) {
+  const uidKey = String(uid);
   const [ownerSession, draft, edit, pending] = await Promise.all([
-    (actor.isOwner || actor.allow('settings')) ? q`SELECT * FROM owner_action_sessions WHERE telegram_user_id = ${uid} LIMIT 1`.then((rows) => rows[0]) : null,
+    (canManageOwnerCaps(actor) || actor.allow('settings')) ? q`SELECT * FROM owner_action_sessions WHERE telegram_user_id = ${uidKey} LIMIT 1`.then((rows) => rows[0]) : null,
     actor.allow('invoices') ? q`SELECT * FROM invoice_drafts WHERE telegram_user_id = ${uid} LIMIT 1`.then((rows) => rows[0]) : null,
     (actor.allow('lookup') || canChangeListingPrice(actor)) ? q`SELECT * FROM listing_edit_sessions WHERE telegram_user_id = ${uid} LIMIT 1`.then((rows) => rows[0]) : null,
     actor.allow('add_listing') ? q`SELECT * FROM listing_registration_sessions WHERE telegram_user_id = ${uid} LIMIT 1`.then((rows) => rows[0]) : null
@@ -1195,6 +1203,13 @@ async function handlePendingText(q, request, message, actor, text) {
   const chatId = message.chat.id;
   const uid = actor.uid;
   const { ownerSession, draft, edit, pending } = await loadPendingSessions(q, actor, uid);
+  if (ownerSession?.action === 'limit') {
+    if (!canManageOwnerCaps(actor)) {
+      await say(chatId, 'تنظیم سقف مالک فقط برای مالک ربات یا «مدیریت ادمین‌ها» است.');
+      return true;
+    }
+    return handleOwnerLimitText(q, chatId, uid, ownerSession, text);
+  }
   const priceUpScope = ownerSession?.action?.match(/^price_up:(active|open|all_open)$/);
   if (priceUpScope && (actor.isOwner || actor.allow('settings'))) {
     const percent = Number(toLatinDigits(text.trim()).replace(',', '.'));
@@ -1206,26 +1221,11 @@ async function handlePendingText(q, request, message, actor, text) {
     await sendPriceUpConfirm(q, chatId, message, actor, priceUpScope[1], percent);
     return true;
   }
-  if (actor.isOwner) {
+  if (canManageOwnerCaps(actor)) {
     if (ownerSession?.action === 'add') {
       await q`INSERT INTO owners(name, active, max_line_slots) VALUES(${text.trim()}, true, 10)`;
-      await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${uid}`;
+      await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${String(uid)}`;
       await say(chatId, `مالک «${text.trim()}» اضافه شد.\nسقف پیش‌فرض: 10 خط`);
-      return true;
-    }
-    if (ownerSession?.action === 'limit') {
-      const slots = parseOwnerCapSlots(text);
-      if (slots == null) {
-        await say(chatId, 'سقف باید یک عدد صحیح باشد.\nمثال: 25\n/cancel = انصراف');
-        return true;
-      }
-      const applied = await applyOwnerCap(q, ownerSession.owner_id, slots);
-      if (!applied.ok) {
-        await say(chatId, applied.error);
-        return true;
-      }
-      await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${uid}`;
-      await say(chatId, `سقف «${applied.owner.name}» شد ${applied.owner.used} از ${slots}.`);
       return true;
     }
     if (ownerSession?.action === 'warehouse_add') {
@@ -1660,6 +1660,28 @@ function ownerManageText(owner) {
   ].join('\n');
 }
 
+async function handleOwnerLimitText(q, chatId, uid, ownerSession, text) {
+  const slots = parseOwnerCapSlots(text);
+  if (slots == null) {
+    await say(chatId, 'سقف باید یک عدد صحیح باشد.\nمثال: 25\n/cancel = انصراف');
+    return true;
+  }
+  const ownerId = Number(ownerSession.owner_id);
+  if (!Number.isFinite(ownerId) || ownerId <= 0) {
+    await say(chatId, 'جلسهٔ تنظیم سقف نامعتبر است. دوباره از «مالکین» مالک را انتخاب کنید.');
+    await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${String(uid)}`;
+    return true;
+  }
+  const applied = await applyOwnerCap(q, ownerId, slots);
+  if (!applied.ok) {
+    await say(chatId, applied.error);
+    return true;
+  }
+  await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${String(uid)}`;
+  await say(chatId, `سقف «${applied.owner.name}» شد ${applied.owner.used} از ${slots}.`);
+  return true;
+}
+
 async function applyOwnerCap(q, ownerId, slots) {
   const owner = await loadOwnerCard(q, ownerId);
   if (!owner) return { ok: false, error: 'مالک پیدا نشد.' };
@@ -1674,7 +1696,7 @@ async function sendOwners(q, chatId, actor) {
   const rows = await q`SELECT o.id, o.name, o.active, o.max_line_slots, COUNT(l.id) FILTER (WHERE l.status IN ('active','reserved','ready_transfer','inactive'))::int AS used
     FROM owners o LEFT JOIN listings l ON l.owner_id = o.id
     GROUP BY o.id ORDER BY o.active DESC, o.name`;
-  if (!actor.isOwner) {
+  if (!canManageOwnerCaps(actor)) {
     const lines = rows.filter((row) => row.active).map((row) => `${row.name} — ${capacityLabel(row.used, row.max_line_slots)}`).join('\n') || 'مالک فعالی نیست.';
     await say(chatId, `مالکین (فقط مشاهده)\n\n${lines}\n\nبرای ثبت خط، مالکی با ظرفیت خالی لازم است.`);
     return;
@@ -2163,7 +2185,7 @@ async function handleCallback(q, request, callback) {
     return;
   }
   if (data.startsWith('owner_') || data === 'owners_back') {
-    if (!actor.isOwner) { await deny(chatId, callback); return; }
+    if (!canManageOwnerCaps(actor)) { await deny(chatId, callback); return; }
     await handleOwnerCallback(q, callback, actor, data);
     return;
   }
@@ -2324,7 +2346,7 @@ async function handleOwnerCallback(q, callback, actor, data) {
   if (manage) {
     const owner = await loadOwnerCard(q, Number(manage[1]));
     if (!owner) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'مالک پیدا نشد.' }); return; }
-    await q`INSERT INTO owner_action_sessions(telegram_user_id, action, owner_id) VALUES(${actor.uid}, 'limit', ${owner.id})
+    await q`INSERT INTO owner_action_sessions(telegram_user_id, action, owner_id) VALUES(${String(actor.uid)}, 'limit', ${owner.id})
       ON CONFLICT(telegram_user_id) DO UPDATE SET action = 'limit', owner_id = EXCLUDED.owner_id, created_at = NOW()`;
     await tg('editMessageText', {
       chat_id: chatId, message_id: messageId,
@@ -2351,7 +2373,7 @@ async function handleOwnerCallback(q, callback, actor, data) {
   const limit = data.match(/^owner_limit_(\d+)$/);
   if (limit) {
     const owner = await loadOwnerCard(q, Number(limit[1]));
-    await q`INSERT INTO owner_action_sessions(telegram_user_id, action, owner_id) VALUES(${actor.uid}, 'limit', ${Number(limit[1])})
+    await q`INSERT INTO owner_action_sessions(telegram_user_id, action, owner_id) VALUES(${String(actor.uid)}, 'limit', ${Number(limit[1])})
       ON CONFLICT(telegram_user_id) DO UPDATE SET action = 'limit', owner_id = EXCLUDED.owner_id, created_at = NOW()`;
     await tg('editMessageText', {
       chat_id: chatId,

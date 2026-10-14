@@ -282,7 +282,9 @@ export function parseOwnerSlot(text) {
 export function parseOwnerCapSlots(text) {
   const raw = String(text ?? '').trim();
   if (!raw || raw.startsWith('/')) return null;
-  const slots = Number(toLatinDigits(raw).replace(/\s/g, ''));
+  const normalized = toLatinDigits(raw).replace(/[\s\u200c\u00a0,،]/g, '');
+  if (!normalized || !/^\d+$/.test(normalized)) return null;
+  const slots = Number(normalized);
   if (!Number.isInteger(slots)) return null;
   return slots;
 }
