@@ -2,6 +2,10 @@ import { CHANNEL_MSG_DEFAULTS, renderChannelDocumentLine } from './channel-messa
 import { botLinkUsername, esc, formatListingPriceHtml, formatPhoneDigits, toLatinDigits } from '../domain/format.js';
 import { channelMsgHtmlFragment } from '../telegram/telegram-text.js';
 
+function channelForSale(row) {
+  return row?.status === 'active' || row?.status === 'ready_transfer';
+}
+
 export function channelText(row, { bot, calcUrl, installmentEnabled = true, statusMessages = null, statusEntities = null }) {
   const msgs = statusMessages || CHANNEL_MSG_DEFAULTS;
   const ents = statusEntities || {};
@@ -18,7 +22,7 @@ export function channelText(row, { bot, calcUrl, installmentEnabled = true, stat
   if (row.status === 'reserved') lines.push(statusHtml('channel_msg_reserved'));
   if (row.status === 'ready_transfer') lines.push(statusHtml('channel_msg_ready_transfer'));
   if (row.status === 'sold') lines.push(statusHtml('channel_msg_sold'));
-  if (row.status === 'active') {
+  if (channelForSale(row)) {
     const links = [];
     if (installmentEnabled) links.push(`<a href="${calcUrl}">${esc(msgs.channel_msg_link_installment)}</a>`);
     links.push(`<a href="https://t.me/${botLinkUsername(bot)}?start=cash_${row.id}">${esc(msgs.channel_msg_link_cash)}</a>`);
@@ -28,7 +32,7 @@ export function channelText(row, { bot, calcUrl, installmentEnabled = true, stat
 }
 
 export function channelPurchaseKeyboard(row, { bot, calcUrl, installmentEnabled = true, statusMessages = null } = {}) {
-  if (!row || row.status !== 'active') return { inline_keyboard: [] };
+  if (!channelForSale(row)) return { inline_keyboard: [] };
   const msgs = statusMessages || CHANNEL_MSG_DEFAULTS;
   const buttons = [];
   if (installmentEnabled && calcUrl) {

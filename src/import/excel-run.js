@@ -34,7 +34,7 @@ export async function clearExcelPending(q, uid) {
 /**
  * @param {import('../database/sql.js').Sql} q
  */
-export async function executeExcelImport(q, request, tg, actor, chatId, ads, { label = '' } = {}) {
+export async function executeExcelImport(q, request, tg, actor, chatId, ads, { label = '', channelBudgetMs = 6000 } = {}) {
   let created = 0;
   let updated = 0;
   let failed = 0;
@@ -90,7 +90,7 @@ export async function executeExcelImport(q, request, tg, actor, chatId, ads, { l
 
   const installmentConfig = await getInstallmentConfig(q).catch(() => null);
   const channelPass = await runExcelChannelQueue(q, tg, actor.uid, {
-    deadlineMs: excelRunBudgetMs(),
+    deadlineMs: channelBudgetMs,
     origin: publicOrigin(request),
     installmentConfig
   });

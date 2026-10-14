@@ -601,7 +601,7 @@ async function handleDeepLink(q, message, text) {
     await say(chatId, 'فروش اقساطی فعلاً غیرفعال است. فقط «خرید نقدی» از کانال در دسترس است.');
     return true;
   }
-  const listing = (await q`SELECT id, phone_display, phone_number, price_toman FROM listings WHERE id = ${payload.listingId} AND status = 'active' LIMIT 1`)[0];
+  const listing = (await q`SELECT id, phone_display, phone_number, price_toman FROM listings WHERE id = ${payload.listingId} AND status IN ('active', 'ready_transfer') LIMIT 1`)[0];
   if (!listing) { await say(chatId, 'این آگهی دیگر موجود نیست.'); return true; }
   await q`INSERT INTO purchase_contact_sessions(telegram_user_id, listing_id, request_type, months, cash_percent, created_at)
     VALUES(${uid}, ${listing.id}, ${payload.kind}, ${payload.months || null}, ${payload.percent || null}, NOW())
@@ -670,7 +670,7 @@ async function handlePurchaseReply(q, message, actor, text) {
   const session = (await q`SELECT * FROM purchase_contact_sessions WHERE telegram_user_id = ${message.from.id}
     AND created_at > NOW() - (${inst.requestExpireMinutes}::int * INTERVAL '1 minute') LIMIT 1`)[0];
   if (!session) return false;
-  const listing = (await q`SELECT * FROM listings WHERE id = ${session.listing_id} AND status = 'active' LIMIT 1`)[0];
+  const listing = (await q`SELECT * FROM listings WHERE id = ${session.listing_id} AND status IN ('active', 'ready_transfer') LIMIT 1`)[0];
   if (!listing) {
     await q`DELETE FROM purchase_contact_sessions WHERE telegram_user_id = ${message.from.id}`;
     await say(message.chat.id, 'این سیم‌کارت دیگر موجود نیست.');
@@ -1982,14 +1982,29 @@ async function confirmExcelImport(q, request, actor, chatId) {
     await say(chatId, 'پیش‌نمایش اکسل منقضی شده. فایل .xlsx را دوباره بفرستید.');
     return;
   }
-  await clearExcelPending(q, actor.uid);
+  const claimedAt = Number(pending.claimedAt) || 0;
+  if (claimedAt && Date.now() - claimedAt < 90_000) {
+    await say(chatId, 'ثبت همین فایل در حال انجام است.\nچند لحظه صبر کنید تا نتیجه بیاید. اگر نیامد، دوباره «تأیید و ثبت» را بزنید.');
+    return;
+  }
+  pending.claimedAt = Date.now();
+  await saveExcelPending(q, actor.uid, pending);
   await say(chatId, `در حال ثبت ${pending.ads.length} ردیف در دیتابیس…`);
-  const result = await executeExcelImport(q, request, tg, actor, chatId, pending.ads, {
-    label: pending.fileName || ''
-  });
-  const summary = formatExcelImportSummary(result);
-  const kb = result.channelPass.done ? undefined : excelChannelContinueKeyboard();
-  await say(chatId, summary, kb);
+  try {
+    const result = await executeExcelImport(q, request, tg, actor, chatId, pending.ads, {
+      label: pending.fileName || '',
+      channelBudgetMs: 6000
+    });
+    await clearExcelPending(q, actor.uid);
+    const summary = formatExcelImportSummary(result);
+    const kb = result.channelPass.done ? undefined : excelChannelContinueKeyboard();
+    await say(chatId, summary, kb);
+  } catch (error) {
+    console.error('excel confirm', error);
+    pending.claimedAt = 0;
+    await saveExcelPending(q, actor.uid, pending);
+    await say(chatId, `ثبت اکسل ناتمام ماند: ${error.message || error}\nدوباره «تأیید و ثبت» را بزنید.`);
+  }
 }
 
 async function continueExcelChannel(q, request, actor, chatId) {
