@@ -1,5 +1,5 @@
 import { displayJalali, formatPhoneDisplay, tehranYmd } from '../domain/format.js';
-import { shouldApplySpecialSale, shouldCleanupSoldChannel, staffNotifyChatIds } from '../domain/logic.js';
+import { purchaseHandoffTarget, purchaseResponsibleLabel, shouldApplySpecialSale, shouldCleanupSoldChannel, staffNotifyChatIds } from '../domain/logic.js';
 import {
   announceSold, applySpecialSale, clearReserveNotice, listingById, logChange, postSpecialSaleNotice,
   publicOrigin, putSetting, syncChannel
@@ -202,15 +202,23 @@ export async function handoffPurchases(q, send = tg) {
     FROM purchase_requests pr JOIN listings l ON l.id = pr.listing_id
     WHERE pr.status = 'pending' AND pr.assigned_priority = 1 AND pr.expires_at IS NOT NULL
       AND pr.expires_at <= NOW() AND pr.handoff_notified = false`;
-  const second = (await q`SELECT * FROM admins WHERE active = true AND priority = 2 ORDER BY priority LIMIT 1`)[0];
-  if (!second) return 0;
+  const admins = await q`SELECT * FROM admins WHERE active = true ORDER BY priority ASC`;
+  if (!admins.length) return 0;
+  let count = 0;
   for (const row of expired) {
-    await q`UPDATE purchase_requests SET assigned_admin = ${second.telegram_user_id}, assigned_priority = 2, expires_at = NOW() + INTERVAL '30 minutes', handoff_notified = true WHERE id = ${row.id}`;
-    const text = `درخواست خرید ${row.request_type === 'cash' ? 'نقدی' : 'اقساطی'} #${row.id}\n\nشماره: ${formatPhoneDisplay(row.phone_number, row.phone_display)}\nوضعیت: ${row.condition_text || '-'}\nقیمت: ${Number(row.base_price_toman).toLocaleString('en-US')} تومان\n\nمشتری: ${row.customer_name || '-'}\nشناسه تلگرام: ${row.customer_telegram_id}\nشماره تماس مشتری: ${row.customer_phone ? formatPhoneDisplay(row.customer_phone) : 'ثبت نشده'}\n\nمسئول فعلی: ${ADMIN_LABELS[2]}`;
-    await send('sendMessage', { chat_id: second.telegram_user_id, text, reply_markup: { inline_keyboard: [[{ text: 'پیگیری شد', callback_data: `claim_${row.id}` }]] } });
-    if (row.assigned_admin) await send('sendMessage', { chat_id: row.assigned_admin, text: `درخواست خرید #${row.id} پیگیری نشد و به ادمین دیگری واگذار گردید.\nمسئول جدید: ${ADMIN_LABELS[2]}` });
+    const target = purchaseHandoffTarget(admins, { assignedAdminUid: row.assigned_admin });
+    if (!target) continue;
+    const targetPriority = Number(target.priority) || 2;
+    const targetLabel = purchaseResponsibleLabel(target, ADMIN_LABELS);
+    await q`UPDATE purchase_requests SET assigned_admin = ${target.telegram_user_id}, assigned_priority = ${targetPriority}, expires_at = NOW() + INTERVAL '30 minutes', handoff_notified = true WHERE id = ${row.id}`;
+    const text = `درخواست خرید ${row.request_type === 'cash' ? 'نقدی' : 'اقساطی'} #${row.id}\n\nشماره: ${formatPhoneDisplay(row.phone_number, row.phone_display)}\nوضعیت: ${row.condition_text || '-'}\nقیمت: ${Number(row.base_price_toman).toLocaleString('en-US')} تومان\n\nمشتری: ${row.customer_name || '-'}\nشناسه تلگرام: ${row.customer_telegram_id}\nشماره تماس مشتری: ${row.customer_phone ? formatPhoneDisplay(row.customer_phone) : 'ثبت نشده'}\n\nمسئول فعلی: ${targetLabel}`;
+    await send('sendMessage', { chat_id: target.telegram_user_id, text, reply_markup: { inline_keyboard: [[{ text: 'پیگیری شد', callback_data: `claim_${row.id}` }, { text: 'واگذاری به ادمین دیگر', callback_data: `handoff_${row.id}` }]] } });
+    if (row.assigned_admin && String(row.assigned_admin) !== String(target.telegram_user_id)) {
+      await send('sendMessage', { chat_id: row.assigned_admin, text: `درخواست خرید #${row.id} پیگیری نشد و به ادمین دیگری واگذار گردید.\nمسئول جدید: ${targetLabel}` });
+    }
+    count += 1;
   }
-  return expired.length;
+  return count;
 }
 
 export async function greetOnce(q, send = tg) {

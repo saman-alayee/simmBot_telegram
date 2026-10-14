@@ -12,8 +12,8 @@ import { buildListingsExcelTemplateBuffer, listingAdsFromExcelBuffer } from '../
 import {
   ALL_PERMISSIONS, PERMISSIONS, PRICE_CHANGE_STATUSES, PRICE_INCREASE_SCOPES,
   canAssignOwner, canChangeListingPrice, canManualDiscount, capacityLabel, decodePriceUpPercent, encodePriceUpPercent,
-  listingListPriceToman, parseListingPriceInput, parseManualDiscountInput, parseOwnerSlot, parseStartPayload, priceAfterPercentIncrease,
-  primaryPurchaseAssignee, purchaseResponsibleLabel, reserveAllowed, saleAllowed, staffNotifyChatIds, validNationalId
+  isValidCustomerFullName, listingListPriceToman, normalizeCustomerFullName, parseListingPriceInput, parseManualDiscountInput, parseOwnerCapSlots, parseOwnerSlot, parseStartPayload, priceAfterPercentIncrease,
+  primaryPurchaseAssignee, purchaseHandoffTarget, purchaseResponsibleLabel, reserveAllowed, saleAllowed, staffNotifyChatIds, validNationalId
 } from '../domain/logic.js';
 import { formatInstallmentConfigSummary, parseNumberList } from '../domain/installment-config.js';
 import {
@@ -285,7 +285,7 @@ function staffGuideFull(actor) {
     actor.allow('invoices') ? '• فاکتور: بعد از «فروش نهایی» → «صدور فاکتور» در همان استعلام' : null,
     '',
     '▸ درخواست خرید مشتری (از کانال)',
-    '• روی پیام درخواست: «پیگیری شد» یا «واگذاری به ادمین ۲»',
+    '• روی پیام درخواست: «پیگیری شد» یا «واگذاری به ادمین دیگر»',
     '• رزرو خط در کانال برای مشتری دیده می‌شود',
     '',
     '▸ میانبرها',
@@ -522,6 +522,7 @@ export async function handleUpdate({ q, request, update }) {
     }
     return;
   }
+  if (actor.isStaff && !text.startsWith('/') && await handlePendingText(q, request, message, actor, text)) return;
   if (await handlePurchaseReply(q, message, actor, text)) return;
   if (!actor.isStaff) {
     await say(chatId, `${welcomeGuide(actor)}\n\nبرای شروع، /start را بزنید یا از کانال وارد شوید.`, channelJoinMarkup());
@@ -531,7 +532,6 @@ export async function handleUpdate({ q, request, update }) {
     await say(chatId, 'منوی مدیریت بسته شد.\nبرای باز کردن دوباره /start بزنید.', markup({ remove_keyboard: true }));
     return;
   }
-  if (!text.startsWith('/') && await handlePendingText(q, request, message, actor, text)) return;
   if (await handleMenu(q, request, message, actor, text)) return;
   if (await handleCommand(q, request, message, actor, text)) return;
   const phone = normalizePhone(text);
@@ -605,28 +605,16 @@ async function handleDeepLink(q, message, text) {
   return true;
 }
 
-async function handlePurchaseReply(q, message, actor, text) {
+async function submitPurchaseRequest(q, message, actor, session, listing, customerName, phone) {
   const inst = await getInstallmentConfig(q);
-  const session = (await q`SELECT * FROM purchase_contact_sessions WHERE telegram_user_id = ${message.from.id}
-    AND created_at > NOW() - (${inst.requestExpireMinutes}::int * INTERVAL '1 minute') LIMIT 1`)[0];
-  if (!session) return false;
-  if (text.startsWith('/') && text !== '/skip') return false;
-  if (!message.contact?.phone_number && text.startsWith('/') && text !== '/skip') return false;
-  if (!message.contact && text.startsWith('/') && text !== '/skip') return false;
-  const rawPhone = message.contact?.phone_number || (text === '/skip' ? null : text);
-  const phone = rawPhone ? customerPhone(rawPhone) : null;
-  if (text !== '/skip' && !phone) { await say(message.chat.id, 'شماره تماس معتبر وارد کنید یا /skip را بزنید.'); return true; }
-  const listing = (await q`SELECT * FROM listings WHERE id = ${session.listing_id} AND status = 'active' LIMIT 1`)[0];
-  if (!listing) {
-    await q`DELETE FROM purchase_contact_sessions WHERE telegram_user_id = ${message.from.id}`;
-    await say(message.chat.id, 'این سیم‌کارت دیگر موجود نیست.');
-    return true;
-  }
   const admins = await q`SELECT telegram_user_id, priority, display_name FROM admins WHERE active = true ORDER BY priority ASC`;
   const assignee = primaryPurchaseAssignee(admins);
-  if (!assignee) { await say(message.chat.id, 'در حال حاضر ادمینی برای دریافت درخواست فعال نیست.'); return true; }
+  if (!assignee) {
+    await say(message.chat.id, 'در حال حاضر ادمینی برای دریافت درخواست فعال نیست.');
+    return;
+  }
   const responsibleLabel = purchaseResponsibleLabel(assignee, ADMIN_LABELS);
-  const name = [message.from?.first_name, message.from?.last_name].filter(Boolean).join(' ') || null;
+  const username = message.from?.username || null;
   let inserted;
   if (session.request_type === 'installment') {
     const months = Number(session.months);
@@ -638,7 +626,7 @@ async function handlePurchaseReply(q, message, actor, text) {
         base_price_toman, cash_amount_toman, balance_toman, monthly_installment_toman, total_installment_toman,
         status, assigned_admin, assigned_priority, expires_at, request_type, cash_percent
       ) VALUES(
-        ${listing.id}, ${message.from.id}, ${message.from?.username || null}, ${name}, ${phone}, ${months},
+        ${listing.id}, ${message.from.id}, ${username}, ${customerName}, ${phone}, ${months},
         ${listing.price_toman}, ${cash}, ${installment.balance}, ${installment.monthly}, ${installment.monthly * months},
         'pending', ${assignee.telegram_user_id}, ${assignee.priority}, NOW() + (${inst.requestExpireMinutes}::int * INTERVAL '1 minute'), 'installment', ${percent}
       ) RETURNING id`)[0];
@@ -649,7 +637,7 @@ async function handlePurchaseReply(q, message, actor, text) {
         base_price_toman, cash_amount_toman, balance_toman, monthly_installment_toman, total_installment_toman,
         status, assigned_admin, assigned_priority, expires_at, request_type, cash_percent
       ) VALUES(
-        ${listing.id}, ${message.from.id}, ${message.from?.username || null}, ${name}, ${phone}, NULL,
+        ${listing.id}, ${message.from.id}, ${username}, ${customerName}, ${phone}, NULL,
         ${listing.price_toman}, ${listing.price_toman}, 0, NULL, NULL,
         'pending', ${assignee.telegram_user_id}, ${assignee.priority}, NOW() + (${inst.requestExpireMinutes}::int * INTERVAL '1 minute'), 'cash', NULL
       ) RETURNING id`)[0];
@@ -665,6 +653,48 @@ async function handlePurchaseReply(q, message, actor, text) {
   });
   if (!sent) console.error('purchase_request_notify_none', inserted.id, notifyIds);
   await q`DELETE FROM purchase_contact_sessions WHERE telegram_user_id = ${message.from.id}`;
+}
+
+async function handlePurchaseReply(q, message, actor, text) {
+  const inst = await getInstallmentConfig(q);
+  const session = (await q`SELECT * FROM purchase_contact_sessions WHERE telegram_user_id = ${message.from.id}
+    AND created_at > NOW() - (${inst.requestExpireMinutes}::int * INTERVAL '1 minute') LIMIT 1`)[0];
+  if (!session) return false;
+  const listing = (await q`SELECT * FROM listings WHERE id = ${session.listing_id} AND status = 'active' LIMIT 1`)[0];
+  if (!listing) {
+    await q`DELETE FROM purchase_contact_sessions WHERE telegram_user_id = ${message.from.id}`;
+    await say(message.chat.id, 'این سیم‌کارت دیگر موجود نیست.');
+    return true;
+  }
+  const step = session.step || 'phone';
+  if (step === 'name') {
+    if (message.contact || (text.startsWith('/') && text !== '/skip')) return false;
+    const customerName = normalizeCustomerFullName(text);
+    if (!isValidCustomerFullName(customerName, { username: message.from?.username })) {
+      await say(message.chat.id, 'نام و نام خانوادگی واقعی را با فاصله بنویسید.\nمثال: علی رضایی\n(یوزرنیم تلگرام مثل @username برای فاکتور قبول نیست.)');
+      return true;
+    }
+    await submitPurchaseRequest(q, message, actor, session, listing, customerName, session.customer_phone || null);
+    return true;
+  }
+  if (text.startsWith('/') && text !== '/skip') return false;
+  if (!message.contact?.phone_number && text.startsWith('/') && text !== '/skip') return false;
+  if (!message.contact && text.startsWith('/') && text !== '/skip') return false;
+  const rawPhone = message.contact?.phone_number || (text === '/skip' ? null : text);
+  const phone = rawPhone ? customerPhone(rawPhone) : null;
+  if (text !== '/skip' && !phone) {
+    await say(message.chat.id, 'شماره تماس معتبر وارد کنید یا /skip را بزنید.');
+    return true;
+  }
+  await q`UPDATE purchase_contact_sessions
+    SET step = 'name', customer_phone = ${phone}, created_at = NOW()
+    WHERE telegram_user_id = ${message.from.id}`;
+  await say(message.chat.id, [
+    'نام و نام خانوادگی خود را برای فاکتور بنویسید.',
+    'مثال: علی رضایی',
+    '',
+    '(لطفاً نام واقعی — نه یوزرنیم تلگرام.)'
+  ].join('\n'), markup({ remove_keyboard: true }));
   return true;
 }
 
@@ -683,7 +713,7 @@ function adminText(row, label) {
   if (row.request_type === 'installment') {
     lines.push('', `پیش‌پرداخت: ${money(row.cash_amount_toman)} تومان (${row.cash_percent || 30}٪)`, `مدت: ${row.months} ماه`, `هر قسط: ${money(row.monthly_installment_toman)} تومان`, `جمع اقساط: ${money(row.total_installment_toman)} تومان`);
   }
-  lines.push('', `مسئول فعلی: ${label}`, `ادمین ۱: ${ADMIN_LABELS[1]}`, `ادمین ۲: ${ADMIN_LABELS[2]}`, '', '«پیگیری شد» = قبول پیگیری · «واگذاری به ادمین ۲» = ارجاع', 'میانبر: استعلام · رزرو+فروش · فاکتور با اطلاعات مشتری');
+  lines.push('', `مسئول فعلی: ${label}`, `ادمین ۱: ${ADMIN_LABELS[1]}`, `ادمین ۲: ${ADMIN_LABELS[2]}`, '', '«پیگیری شد» = قبول پیگیری · «واگذاری به ادمین دیگر» = ارجاع به ادمین بعدی', 'میانبر: استعلام · رزرو+فروش · فاکتور با اطلاعات مشتری');
   return lines.join('\n');
 }
 
@@ -695,7 +725,7 @@ function purchaseShortcutKeyboard(id) {
 }
 
 function adminKeyboard(id) {
-  return { inline_keyboard: [[{ text: 'پیگیری شد', callback_data: `claim_${id}` }, { text: 'واگذاری به ادمین ۲', callback_data: `handoff_${id}` }], ...purchaseShortcutKeyboard(id)] };
+  return { inline_keyboard: [[{ text: 'پیگیری شد', callback_data: `claim_${id}` }, { text: 'واگذاری به ادمین دیگر', callback_data: `handoff_${id}` }], ...purchaseShortcutKeyboard(id)] };
 }
 
 function purchaseClaimedKeyboard(id) {
@@ -791,9 +821,11 @@ async function startInvoiceFromPurchaseRequest(q, chatId, actor, pr) {
     return true;
   }
   const saleType = pr.request_type === 'cash' ? 'cash' : 'installment';
-  const step = pr.customer_name?.trim() ? 'nid' : 'name';
+  const draftName = normalizeCustomerFullName(pr.customer_name);
+  const hasName = isValidCustomerFullName(draftName, { username: pr.customer_username });
+  const step = hasName ? 'nid' : 'name';
   await q`INSERT INTO invoice_drafts(telegram_user_id, listing_id, step, customer_name, customer_phone, sale_type, months, cash_percent)
-    VALUES(${actor.uid}, ${listing.id}, ${step}, ${pr.customer_name?.trim() || null}, ${pr.customer_phone || null}, ${saleType}, ${pr.months}, ${pr.cash_percent})
+    VALUES(${actor.uid}, ${listing.id}, ${step}, ${hasName ? draftName : null}, ${pr.customer_phone || null}, ${saleType}, ${pr.months}, ${pr.cash_percent})
     ON CONFLICT(telegram_user_id) DO UPDATE SET
       listing_id = EXCLUDED.listing_id, step = EXCLUDED.step,
       customer_name = EXCLUDED.customer_name, customer_phone = EXCLUDED.customer_phone,
@@ -1179,10 +1211,17 @@ async function handlePendingText(q, request, message, actor, text) {
       return true;
     }
     if (ownerSession?.action === 'limit') {
-      const slots = Number(toLatinDigits(text.trim()).replace(/\s/g, ''));
+      const slots = parseOwnerCapSlots(text);
+      if (slots == null) {
+        await say(chatId, 'سقف باید یک عدد صحیح باشد.\nمثال: 25\n/cancel = انصراف');
+        return true;
+      }
       const applied = await applyOwnerCap(q, ownerSession.owner_id, slots);
+      if (!applied.ok) {
+        await say(chatId, applied.error);
+        return true;
+      }
       await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${uid}`;
-      if (!applied.ok) { await say(chatId, applied.error); return true; }
       await say(chatId, `سقف «${applied.owner.name}» شد ${applied.owner.used} از ${slots}.`);
       return true;
     }
@@ -1973,8 +2012,12 @@ async function syncExcel(q, request, message, actor) {
 
 async function continueInvoice(q, chatId, uid, draft, text) {
   if (draft.step === 'name') {
-    if (text.trim().length < 5) { await say(chatId, 'نام و نام خانوادگی را کامل وارد کنید.'); return true; }
-    await q`UPDATE invoice_drafts SET customer_name = ${text.trim()}, step = 'nid', updated_at = NOW() WHERE telegram_user_id = ${uid}`;
+    const customerName = normalizeCustomerFullName(text);
+    if (!isValidCustomerFullName(customerName)) {
+      await say(chatId, 'نام و نام خانوادگی واقعی را با فاصله بنویسید.\nمثال: علی رضایی\n(یوزرنیم تلگرام برای فاکتور قبول نیست.)');
+      return true;
+    }
+    await q`UPDATE invoice_drafts SET customer_name = ${customerName}, step = 'nid', updated_at = NOW() WHERE telegram_user_id = ${uid}`;
     await say(chatId, 'کد ملی ۱۰ رقمی را وارد کنید.');
     return true;
   }
@@ -2294,6 +2337,8 @@ async function handleOwnerCallback(q, callback, actor, data) {
   if (manage) {
     const owner = await loadOwnerCard(q, Number(manage[1]));
     if (!owner) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'مالک پیدا نشد.' }); return; }
+    await q`INSERT INTO owner_action_sessions(telegram_user_id, action, owner_id) VALUES(${actor.uid}, 'limit', ${owner.id})
+      ON CONFLICT(telegram_user_id) DO UPDATE SET action = 'limit', owner_id = EXCLUDED.owner_id, created_at = NOW()`;
     await tg('editMessageText', {
       chat_id: chatId, message_id: messageId,
       text: ownerManageText(owner),
@@ -3353,20 +3398,28 @@ async function handleClaim(q, callback, actor, action, id) {
     await q`UPDATE purchase_requests SET status = 'claimed', claimed_at = NOW(), assigned_admin = ${actor.uid}, assigned_priority = (SELECT priority FROM admins WHERE telegram_user_id = ${actor.uid} LIMIT 1) WHERE id = ${id}`;
     await say(chatId, `درخواست خرید #${id} پیگیری شد.\nاز دکمه‌های همان پیام: «رزرو و فروش» یا «فاکتور با اطلاعات مشتری».`);
     await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: JSON.stringify(purchaseClaimedKeyboard(id)) });
-    await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'درخواست به شما واگذار شد.' });
+    await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'پیگیری شما ثبت شد.' });
     return;
   }
-  const second = (await q`SELECT * FROM admins WHERE active = true AND priority = 2 ORDER BY priority LIMIT 1`)[0];
-  if (!second) { await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'ادمین دوم فعال نیست.' }); return; }
-  await q`UPDATE purchase_requests SET status = 'pending', assigned_admin = ${second.telegram_user_id}, assigned_priority = 2, expires_at = NOW() + INTERVAL '30 minutes', handoff_notified = true WHERE id = ${id}`;
+  const admins = await q`SELECT * FROM admins WHERE active = true ORDER BY priority ASC`;
+  const target = purchaseHandoffTarget(admins, { actorUid: actor.uid, assignedAdminUid: row.assigned_admin });
+  if (!target) {
+    await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'ادمین دیگری برای واگذاری نیست.' });
+    return;
+  }
+  const targetPriority = Number(target.priority) || 2;
+  await q`UPDATE purchase_requests SET status = 'pending', assigned_admin = ${target.telegram_user_id}, assigned_priority = ${targetPriority}, expires_at = NOW() + INTERVAL '30 minutes', handoff_notified = true WHERE id = ${id}`;
   const full = (await q`SELECT pr.*, l.phone_number, l.phone_display, l.condition_text FROM purchase_requests pr JOIN listings l ON l.id = pr.listing_id WHERE pr.id = ${id}`)[0];
+  const targetLabel = purchaseResponsibleLabel(target, ADMIN_LABELS);
   await notifyPurchaseRequestStaff(tg, {
-    chatIds: [String(second.telegram_user_id)],
-    text: adminText(full, purchaseResponsibleLabel(second, ADMIN_LABELS)),
+    chatIds: [String(target.telegram_user_id)],
+    text: adminText(full, targetLabel),
     replyMarkup: adminKeyboard(id)
   });
-  if (row.current_admin_uid) await say(row.current_admin_uid, `درخواست خرید #${id} به ادمین ۲ واگذار شد.`);
+  if (row.current_admin_uid && String(row.current_admin_uid) !== String(target.telegram_user_id)) {
+    await say(row.current_admin_uid, `درخواست خرید #${id} به ${targetLabel} واگذار شد.`);
+  }
   await tg('editMessageReplyMarkup', { chat_id: chatId, message_id: messageId, reply_markup: JSON.stringify({ inline_keyboard: [] }) });
-  await tg('answerCallbackQuery', { callback_query_id: callback.id, text: 'به ادمین ۲ واگذار شد.' });
+  await tg('answerCallbackQuery', { callback_query_id: callback.id, text: `به ${targetLabel} واگذار شد.` });
 }
 

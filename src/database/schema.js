@@ -84,8 +84,12 @@ async function applySchema(q) {
       request_type TEXT NOT NULL,
       months INTEGER,
       cash_percent INTEGER,
+      step TEXT NOT NULL DEFAULT 'phone',
+      customer_phone TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`,
+    `ALTER TABLE purchase_contact_sessions ADD COLUMN IF NOT EXISTS step TEXT NOT NULL DEFAULT 'phone'`,
+    `ALTER TABLE purchase_contact_sessions ADD COLUMN IF NOT EXISTS customer_phone TEXT`,
     `CREATE TABLE IF NOT EXISTS listing_edit_sessions (
       telegram_user_id BIGINT PRIMARY KEY,
       listing_id BIGINT NOT NULL,

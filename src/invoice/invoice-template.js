@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { displayJalali, formatPhoneDisplay, money } from '../domain/format.js';
+import { isValidCustomerFullName, normalizeCustomerFullName } from '../domain/logic.js';
 
 const templateDir = fileURLToPath(new URL('../../assets/invoice-template/', import.meta.url));
 const htmlPath = path.join(templateDir, 'invoice-template.html');
@@ -111,7 +112,10 @@ export function invoiceTemplateContext(invoice) {
     invoice_date: displayJalali(created),
     invoice_time: formatInvoiceTime(created),
     invoice_number: invoice.invoice_number || '-',
-    customer_name: invoice.customer_name || '-',
+    customer_name: (() => {
+      const n = normalizeCustomerFullName(invoice.customer_name);
+      return isValidCustomerFullName(n) ? n : '-';
+    })(),
     national_id: invoice.national_id || '-',
     customer_phone: formatPhoneDisplay(invoice.customer_phone) || invoice.customer_phone || '-',
     birth_date: displayJalali(invoice.birth_date),

@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  allow, canAssignOwner, canChangeListingPrice, canReleaseReservation, capacityLabel, excelTarget, invoiceDiscount, invoiceMath,
-  isReservationExpired, nextInvoiceNumber, parseExcelAd, parseListingPriceInput, parseOwnerSlot, parseStartPayload,
-  listingListPriceToman, parseManualDiscountInput, PERMISSIONS, prefixRank, primaryPurchaseAssignee, purchaseResponsibleLabel,
+  allow, canAssignOwner, canChangeListingPrice, canReleaseReservation, capacityLabel, excelTarget, invoiceDiscount, invoiceMath, isValidCustomerFullName,
+  isReservationExpired, nextInvoiceNumber, parseExcelAd, parseListingPriceInput, parseOwnerCapSlots, parseOwnerSlot, parseStartPayload,
+  listingListPriceToman, parseManualDiscountInput, PERMISSIONS, prefixRank, primaryPurchaseAssignee, purchaseHandoffTarget, purchaseResponsibleLabel,
   registrationPlan, reserveAllowed, saleAllowed, shouldApplySpecialSale, staffNotifyChatIds,
   shouldCleanupSoldChannel, sortListings, priceAfterPercentIncrease, specialPrice, validNationalId
 } from '../src/domain/logic.js';
@@ -27,6 +27,24 @@ test('percent price increase rounds to whole millions', () => {
   assert.equal(priceAfterPercentIncrease(580_000_000, 5), 609_000_000);
   assert.equal(priceAfterPercentIncrease(500_000_000, 10), 550_000_000);
   assert.equal(priceAfterPercentIncrease(100_000_000, 0), null);
+});
+
+test('parseOwnerCapSlots accepts persian digits and rejects commands', () => {
+  assert.equal(parseOwnerCapSlots('25'), 25);
+  assert.equal(parseOwnerCapSlots('۶'), 6);
+  assert.equal(parseOwnerCapSlots('/cancel'), null);
+  assert.equal(parseOwnerCapSlots('مالکین'), null);
+});
+
+test('purchase handoff picks another admin not the actor or current assignee', () => {
+  const admins = [
+    { telegram_user_id: '111', priority: 1, active: true, display_name: 'A1' },
+    { telegram_user_id: '222', priority: 2, active: true, display_name: 'A2' }
+  ];
+  assert.equal(purchaseHandoffTarget(admins, { actorUid: '111', assignedAdminUid: '111' })?.telegram_user_id, '222');
+  assert.equal(purchaseHandoffTarget(admins, { actorUid: '222', assignedAdminUid: '222' })?.telegram_user_id, '111');
+  assert.equal(purchaseHandoffTarget(admins, { actorUid: '111', assignedAdminUid: '222' })?.telegram_user_id, '222');
+  assert.equal(purchaseHandoffTarget([admins[0]], { actorUid: '111', assignedAdminUid: '111' }), null);
 });
 
 test('purchase request notifies all staff admins and assigns priority 1', () => {
@@ -162,6 +180,13 @@ test('excel rows update the open cycle and do not invent a sold overwrite', () =
   assert.equal(ad.phone, '09120000000');
   assert.equal(ad.price, 120000000);
   assert.equal(parseExcelAd({ 'سیم‌کارت': '09130000000', 'قیمت': '10' }), null);
+});
+
+test('customer full name rejects telegram username on invoice', () => {
+  assert.equal(isValidCustomerFullName('علی رضایی'), true);
+  assert.equal(isValidCustomerFullName('علی'), false);
+  assert.equal(isValidCustomerFullName('@samiito', { username: 'samiito' }), false);
+  assert.equal(isValidCustomerFullName('samiito', { username: 'samiito' }), false);
 });
 
 test('invoice keeps identity data structured and calculates installment from the final price', () => {

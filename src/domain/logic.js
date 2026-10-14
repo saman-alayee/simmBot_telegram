@@ -33,6 +33,23 @@ export function decodePriceUpPercent(token) {
 }
 
 /** قیمت جدید به تومان؛ عدد کوچک‌تر از ۱۰۰۰۰ یعنی میلیون. */
+/** نام واقعی خریدار برای فاکتور — نه @username تلگرام */
+export function isValidCustomerFullName(text, { username } = {}) {
+  const t = String(text ?? '').trim().replace(/\s+/g, ' ');
+  if (t.length < 5 || !/\s/.test(t)) return false;
+  if (/^@\w{3,}$/i.test(t)) return false;
+  const un = String(username || '').trim().replace(/^@/, '').toLowerCase();
+  if (un) {
+    const compact = t.replace(/\s+/g, '').toLowerCase();
+    if (compact === un || t.toLowerCase() === `@${un}`) return false;
+  }
+  return true;
+}
+
+export function normalizeCustomerFullName(text) {
+  return String(text ?? '').trim().replace(/\s+/g, ' ');
+}
+
 export function parseListingPriceInput(raw) {
   const text = toLatinDigits(String(raw ?? '').trim()).replace(/,/g, '').replace(/\s+/g, '');
   if (!text) return null;
@@ -111,6 +128,26 @@ export function purchaseResponsibleLabel(assignee, adminLabels = {}) {
   const priority = Number(assignee?.priority);
   if (adminLabels[priority]) return adminLabels[priority];
   return assignee?.telegram_user_id ? `ادمین ${assignee.telegram_user_id}` : 'ادمین';
+}
+
+/** واگذاری درخواست خرید به ادمین دیگر: دستی → نه خودِ کلیک‌کننده؛ cron → نه مسئول فعلی. */
+export function purchaseHandoffTarget(admins = [], { actorUid, assignedAdminUid } = {}) {
+  const list = admins.filter((a) => a && a.active !== false && a.telegram_user_id != null && a.telegram_user_id !== '');
+  const exclude = new Set();
+  const actor = String(actorUid ?? '').trim();
+  const assignedUid = String(assignedAdminUid ?? '').trim();
+  if (actor) exclude.add(actor);
+  else if (assignedUid) exclude.add(assignedUid);
+  const candidates = list.filter((a) => !exclude.has(String(a.telegram_user_id)));
+  if (!candidates.length) return null;
+  const assigneeRow = list.find((a) => String(a.telegram_user_id) === assignedUid);
+  const assignedPriority = Number(assigneeRow?.priority);
+  if (Number.isFinite(assignedPriority)) {
+    const otherPriority = candidates.find((a) => Number(a.priority) !== assignedPriority);
+    if (otherPriority) return otherPriority;
+  }
+  candidates.sort((a, b) => Number(a.priority || 99) - Number(b.priority || 99));
+  return candidates[0];
 }
 
 export function staffNotifyChatIds(env = process.env, admins = []) {
@@ -239,6 +276,15 @@ export function parseOwnerSlot(text) {
   if (!Number.isInteger(id) || id <= 0) return null;
   if (!Number.isInteger(slots) || slots < 0 || slots > 100000) return null;
   return { id, slots };
+}
+
+/** عدد سقف خط مالک از پیام متنی (فارسی/انگلیسی). */
+export function parseOwnerCapSlots(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw || raw.startsWith('/')) return null;
+  const slots = Number(toLatinDigits(raw).replace(/\s/g, ''));
+  if (!Number.isInteger(slots)) return null;
+  return slots;
 }
 
 /** قیمت مبنا قبل از تخفیف (برای فاکتور و تخفیف دستی) */
