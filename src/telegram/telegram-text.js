@@ -1,8 +1,20 @@
 import { esc } from '../domain/format.js';
+import { normalizeCustomEmojiEntity } from './telegram-update.js';
 
 /** طول بر حسب UTF-16 code unit (همان offset/length در entities تلگرام — برابر `.length` در JS). */
 export function utf16Length(str) {
   return String(str ?? '').length;
+}
+
+/** متن پیام کاربر + محل شروع body (برای ایموجی Pro بعد از trim). */
+export function messageBodyMeta(message, trimmedBody = null) {
+  const full = message?.text ?? message?.caption ?? '';
+  const lead = full.search(/\S/);
+  if (lead < 0) return { full, bodyRaw: '', bodyStartUtf16: 0, body: '' };
+  const bodyRaw = full.slice(lead);
+  const bodyStartUtf16 = utf16Length(full.slice(0, lead));
+  const body = trimmedBody != null ? String(trimmedBody) : bodyRaw.trim();
+  return { full, bodyRaw, bodyStartUtf16, body };
 }
 
 export function utf16IndexToJs(str, utf16Index) {
@@ -17,14 +29,20 @@ function customEmojiEntitiesInRange(fullText, bodyStartUtf16, bodyUtf16Len, enti
   if (!bodyUtf16Len || !entities?.length) return [];
   const endUtf16 = bodyStartUtf16 + bodyUtf16Len;
   return entities
+    .map((e) => normalizeCustomEmojiEntity(e))
     .filter((e) => e.type === 'custom_emoji' && e.custom_emoji_id != null)
-    .filter((e) => e.offset >= bodyStartUtf16 && e.offset + e.length <= endUtf16)
-    .map((e) => ({
-      type: 'custom_emoji',
-      offset: e.offset - bodyStartUtf16,
-      length: e.length,
-      custom_emoji_id: String(e.custom_emoji_id)
-    }));
+    .filter((e) => e.offset < endUtf16 && e.offset + e.length > bodyStartUtf16)
+    .map((e) => {
+      const clipStart = Math.max(e.offset, bodyStartUtf16);
+      const clipEnd = Math.min(e.offset + e.length, endUtf16);
+      return {
+        type: 'custom_emoji',
+        offset: clipStart - bodyStartUtf16,
+        length: clipEnd - clipStart,
+        custom_emoji_id: String(e.custom_emoji_id)
+      };
+    })
+    .filter((e) => e.length > 0);
 }
 
 export function sliceEntitiesForBody(fullText, bodyText, entities) {
@@ -133,6 +151,16 @@ export function channelMsgBodyFromMessage(message, meta) {
     );
     return trimBodyAndEntities(meta.bodyRaw, sliced);
   }
+  const bodyMeta = messageBodyMeta(message, meta?.body);
+  if (bodyMeta.body) {
+    const sliced = customEmojiEntitiesInRange(
+      bodyMeta.full,
+      bodyMeta.bodyStartUtf16,
+      utf16Length(bodyMeta.bodyRaw),
+      ents
+    );
+    return trimBodyAndEntities(bodyMeta.bodyRaw, sliced);
+  }
   const bodyText = String(meta?.body ?? full).trim();
   const sliced = entitiesFromUserMessage(message, bodyText);
   return trimBodyAndEntities(bodyText, sliced);
@@ -141,7 +169,10 @@ export function channelMsgBodyFromMessage(message, meta) {
 /** HTML کانال: ایموجی اختصاصی تلگرام با tg-emoji */
 export function channelMsgHtmlFragment(text, entities) {
   const str = String(text ?? '');
-  const custom = (entities || []).filter((e) => e.type === 'custom_emoji').sort((a, b) => a.offset - b.offset);
+  const custom = (entities || [])
+    .map((e) => normalizeCustomEmojiEntity(e))
+    .filter((e) => e.type === 'custom_emoji' && e.custom_emoji_id)
+    .sort((a, b) => a.offset - b.offset);
   if (!custom.length) return esc(str);
   let out = '';
   let lastJs = 0;
@@ -159,7 +190,9 @@ export function channelMsgHtmlFragment(text, entities) {
 
 export function sendMessagePayload(text, entities) {
   const payload = { text: String(text ?? '') };
-  const custom = (entities || []).filter((e) => e.type === 'custom_emoji');
+  const custom = (entities || [])
+    .map((e) => normalizeCustomEmojiEntity(e))
+    .filter((e) => e.type === 'custom_emoji' && e.custom_emoji_id);
   if (custom.length) payload.entities = custom;
   return payload;
 }

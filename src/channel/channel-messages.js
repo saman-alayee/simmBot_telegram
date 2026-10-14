@@ -1,5 +1,6 @@
 import { displayJalali, isDocumentReadyDue } from '../domain/format.js';
 import { trimBodyAndEntities } from '../telegram/telegram-text.js';
+import { normalizeCustomEmojiEntity } from '../telegram/telegram-update.js';
 
 /** Settings keys — متن‌های قابل ویرایش در کانال */
 export const CHANNEL_MSG_DEFAULTS = {
@@ -76,7 +77,9 @@ export async function loadChannelMessageBundles(q, settingValue) {
     if (entRaw) {
       try {
         const parsed = JSON.parse(entRaw);
-        if (Array.isArray(parsed) && parsed.length) entities[key] = parsed;
+        if (Array.isArray(parsed) && parsed.length) {
+          entities[key] = parsed.map((e) => normalizeCustomEmojiEntity(e));
+        }
       } catch {
         /* ignore */
       }

@@ -106,7 +106,13 @@ async function telegramApi(method, body) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body || {})
   });
-  return response.json();
+  const raw = await response.text();
+  try {
+    const { parseTelegramUpdate } = await import('../../src/telegram/telegram-update.js');
+    return parseTelegramUpdate(raw);
+  } catch {
+    return JSON.parse(raw);
+  }
 }
 
 function kindOf(update) {

@@ -5,7 +5,7 @@ import {
   clearChannelStatusMessage, loadChannelStatusMessages, saveChannelMessage
 } from '../channel/channel-messages.js';
 import {
-  channelMsgBodyFromMessage, parseSetChannelMsg, parseSetChannelMsgMeta, sendMessagePayload, utf16Length
+  channelMsgBodyFromMessage, messageBodyMeta, parseSetChannelMsg, parseSetChannelMsgMeta, sendMessagePayload, utf16Length
 } from '../telegram/telegram-text.js';
 import { syncBotCommandsForChat } from '../bot/commands.js';
 import { buildListingsExcelTemplateBuffer, listingAdsFromExcelBuffer } from '../import/excel-import.js';
@@ -1027,7 +1027,7 @@ async function handleCommand(q, request, message, actor, text) {
   if (text.startsWith('/setstorename ') && actor.isOwner) { await putSetting(q, 'store_name', text.slice(14).trim()); await say(chatId, 'نام فروشگاه ذخیره شد.'); return true; }
   if (text.startsWith('/setstorephone ') && actor.isOwner) { await putSetting(q, 'store_phone', text.slice(15).trim()); await say(chatId, 'تلفن فروشگاه ذخیره شد.'); return true; }
   if (text.startsWith('/setstoreaddress ') && actor.isOwner) { await putSetting(q, 'store_address', text.slice(17).trim()); await say(chatId, 'آدرس فروشگاه ذخیره شد.'); return true; }
-  const setChannelMsg = parseSetChannelMsg(text);
+  const setChannelMsg = parseSetChannelMsg(message.text ?? text);
   if (setChannelMsg && canEditChannelMessages(actor)) {
     const meta = parseSetChannelMsgMeta(message.text ?? text);
     const key = channelMsgKeyFromAlias(setChannelMsg.alias);
@@ -1204,8 +1204,8 @@ async function handlePendingText(q, request, message, actor, text) {
   }
   const chanmsgKey = ownerSession?.action?.match(/^chanmsg:(channel_msg_[a-z0-9_]+)$/);
   if (chanmsgKey && canEditChannelMessages(actor)) {
-    const body = text.trim();
-    if (!body || body.length > 500) {
+    const bodyMeta = messageBodyMeta(message, text);
+    if (!bodyMeta.body || bodyMeta.body.length > 500) {
       await say(chatId, 'متن پیام باید بین ۱ تا ۵۰۰ کاراکتر باشد.\nبرای انصراف /cancel بزنید.');
       return true;
     }
@@ -1214,7 +1214,11 @@ async function handlePendingText(q, request, message, actor, text) {
       await say(chatId, 'کلید پیام نامعتبر است.');
       return true;
     }
-    const { text: bodyNorm, entities: msgEntities } = channelMsgBodyFromMessage(message, { body });
+    const { text: bodyNorm, entities: msgEntities } = channelMsgBodyFromMessage(message, {
+      body: bodyMeta.body,
+      bodyRaw: bodyMeta.bodyRaw,
+      bodyStartUtf16: bodyMeta.bodyStartUtf16
+    });
     await saveChannelMessage(q, putSetting, key, bodyNorm, msgEntities);
     await q`DELETE FROM owner_action_sessions WHERE telegram_user_id = ${uid}`;
     const echo = sendMessagePayload(bodyNorm, msgEntities);

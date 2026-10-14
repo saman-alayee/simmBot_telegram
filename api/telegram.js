@@ -4,6 +4,7 @@ import { sql } from '../src/database/sql.js';
 import { syncDefaultBotCommands } from '../src/bot/commands.js';
 import { ensureSchema } from '../src/database/schema.js';
 import { handleUpdate, tg } from '../src/bot/router.js';
+import { normalizeTelegramUpdate, parseTelegramUpdate } from '../src/telegram/telegram-update.js';
 
 let defaultCommandsSynced = false;
 async function ensureDefaultBotCommands() {
@@ -31,7 +32,10 @@ export default {
       return new Response('Unauthorized', { status: 401 });
     }
     let update;
-    try { update = await request.json(); } catch { return Response.json({ ok: true }); }
+    try {
+      const raw = await request.text();
+      update = normalizeTelegramUpdate(parseTelegramUpdate(raw));
+    } catch { return Response.json({ ok: true }); }
     try {
       const q = sql();
       await prepareDb(q);
