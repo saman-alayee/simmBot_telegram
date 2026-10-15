@@ -56,6 +56,16 @@ export default {
       return Response.json({ ok: true });
     } catch (error) {
       console.error(error);
+      const chatId = update?.message?.chat?.id ?? update?.callback_query?.message?.chat?.id;
+      if (chatId) {
+        try {
+          const hint = String(error?.message || 'خطای ناشناخته').slice(0, 180);
+          await tg('sendMessage', {
+            chat_id: chatId,
+            text: `⚠️ خطای سرور (دیتابیس یا env).\n${hint}\n\nDATABASE_URL روی Vercel را با Neon جدید چک کنید.`
+          });
+        } catch { /* ignore */ }
+      }
       return Response.json({ ok: true });
     }
   }
