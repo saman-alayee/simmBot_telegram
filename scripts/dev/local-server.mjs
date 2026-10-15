@@ -129,7 +129,9 @@ let stopped = false;
 
 async function handleUpdate(update) {
   const headers = { 'content-type': 'application/json' };
-  if (process.env.WEBHOOK_SECRET) headers['x-telegram-bot-api-secret-token'] = process.env.WEBHOOK_SECRET;
+  const { webhookSecretToken } = await import('../../src/telegram/webhook-secret.js');
+  const whSecret = webhookSecretToken();
+  if (whSecret) headers['x-telegram-bot-api-secret-token'] = whSecret;
   const request = new Request(`${publicOrigin}/api/telegram`, {
     method: 'POST',
     headers,
@@ -184,7 +186,9 @@ const server = http.createServer(async (req, res) => {
 async function restoreWebhook() {
   if (!previousWebhook) return;
   const body = { url: previousWebhook };
-  if (process.env.WEBHOOK_SECRET) body.secret_token = process.env.WEBHOOK_SECRET;
+  const { webhookSecretToken } = await import('../../src/telegram/webhook-secret.js');
+  const whSecret = webhookSecretToken();
+  if (whSecret) body.secret_token = whSecret;
   const result = await telegramApi('setWebhook', body);
   console.log(result.ok ? 'وبهوک قبلی برگردانده شد.' : 'برگرداندن وبهوک ناموفق بود.');
 }

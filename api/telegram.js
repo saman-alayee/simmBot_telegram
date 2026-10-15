@@ -5,6 +5,7 @@ import { syncDefaultBotCommands } from '../src/bot/commands.js';
 import { ensureSchema } from '../src/database/schema.js';
 import { handleUpdate, tg } from '../src/bot/router.js';
 import { normalizeTelegramUpdate, parseTelegramUpdate } from '../src/telegram/telegram-update.js';
+import { webhookSecretCandidates } from '../src/telegram/webhook-secret.js';
 
 let defaultCommandsSynced = false;
 async function ensureDefaultBotCommands() {
@@ -21,15 +22,28 @@ async function ensureDefaultBotCommands() {
 const schemaReadyMarker = path.join(process.cwd(), '.local', '.schema-ready');
 
 async function prepareDb(q) {
-  if (process.env.LOCAL_PG === '1' && fs.existsSync(schemaReadyMarker)) return;
+  if (process.env.LOCAL_PG === '1' && fs.existsSync(schemaReadyMarker)) {
+    try {
+      const rows = await q.query(
+        `SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'listings' LIMIT 1`
+      );
+      if (rows?.length) return;
+    } catch {
+      /* re-run schema after local DB wipe */
+    }
+  }
   await ensureSchema(q);
 }
 
 export default {
   async fetch(request) {
     if (request.method !== 'POST') return new Response('OK');
-    if (process.env.WEBHOOK_SECRET && request.headers.get('x-telegram-bot-api-secret-token') !== process.env.WEBHOOK_SECRET) {
-      return new Response('Unauthorized', { status: 401 });
+    const allowedSecrets = webhookSecretCandidates();
+    if (allowedSecrets.size) {
+      const incoming = request.headers.get('x-telegram-bot-api-secret-token') || '';
+      if (!allowedSecrets.has(incoming)) {
+        return new Response('Unauthorized', { status: 401 });
+      }
     }
     let update;
     try {
