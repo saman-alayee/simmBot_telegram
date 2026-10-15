@@ -9,7 +9,10 @@ export default {
     const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
     const key = url.searchParams.get('key');
     if (!TOKEN) return Response.json({ ok: false, error: 'Missing TELEGRAM_BOT_TOKEN' }, { status: 500 });
-    if (!isValidSetupKey(key)) return Response.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
+    const cron = String(process.env.CRON_SECRET || '').trim();
+    const bearer = request.headers.get('authorization') || '';
+    const cronOk = cron && cron !== '[SENSITIVE]' && bearer === `Bearer ${cron}`;
+    if (!cronOk && !isValidSetupKey(key)) return Response.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
 
     let schema = { ok: true };
     try {
