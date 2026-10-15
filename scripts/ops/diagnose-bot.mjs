@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { setupAccessKey, webhookSecretToken } from '../../src/telegram/webhook-secret.js';
+import { isValidSetupKey, setupAccessKeyDerived, webhookSecretToken } from '../../src/telegram/webhook-secret.js';
 
 function loadEnv(file) {
   if (!fs.existsSync(file)) return;
@@ -106,7 +106,7 @@ try {
 }
 
 if (process.argv.includes('--fix-webhook')) {
-  const setupKey = setupAccessKey();
+  const setupKey = setupAccessKeyDerived();
   const origin = webhookUrl.replace(/\/api\/telegram\/?$/, '') || 'https://simmbottelegram-eta.vercel.app';
   if (setupKey) {
     const fix = await fetch(`${origin}/api/setup?key=${encodeURIComponent(setupKey)}`);

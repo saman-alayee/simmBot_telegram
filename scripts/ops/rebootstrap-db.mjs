@@ -34,7 +34,12 @@ function isLocalDbUrl(url) {
 
 loadEnv('.env.local');
 
-if (process.env.LOCAL_PG === '1' || isLocalDbUrl(process.env.DATABASE_URL)) {
+const forceRemote = process.argv.includes('--neon') || process.argv.includes('--remote');
+if (forceRemote) {
+  delete process.env.LOCAL_PG;
+}
+
+if (!forceRemote && (process.env.LOCAL_PG === '1' || isLocalDbUrl(process.env.DATABASE_URL))) {
   const { ensureLocalPostgres } = await import('../dev/local-pg.mjs');
   await ensureLocalPostgres();
   if (fs.existsSync('.local/.schema-ready')) fs.unlinkSync('.local/.schema-ready');
@@ -69,4 +74,8 @@ if (/^\d+$/.test(ownerUid)) {
 fs.mkdirSync('.local', { recursive: true });
 fs.writeFileSync('.local/.schema-ready', new Date().toISOString());
 
-console.log('OK rebootstrap', { ownerId: owner.id, warehouseId: wh.id, adminUid: ownerUid || null });
+let dbHost = '?';
+try {
+  dbHost = new URL(String(process.env.DATABASE_URL).replace(/^postgres(ql)?:\/\//, 'http://')).hostname;
+} catch { /* ignore */ }
+console.log('OK rebootstrap', { dbHost, ownerId: owner.id, warehouseId: wh.id, adminUid: ownerUid || null });

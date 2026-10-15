@@ -51,6 +51,9 @@ async function applySchema(q) {
     `ALTER TABLE listings ADD COLUMN IF NOT EXISTS sale_document_completed_at TIMESTAMPTZ`,
     `ALTER TABLE listings ADD COLUMN IF NOT EXISTS sale_document_cycle INTEGER NOT NULL DEFAULT 0`,
     `ALTER TABLE listings ADD COLUMN IF NOT EXISTS sale_document_last_reminded_at TIMESTAMPTZ`,
+    `ALTER TABLE listings ADD COLUMN IF NOT EXISTS sale_document_assigned_admin BIGINT`,
+    `ALTER TABLE listings ADD COLUMN IF NOT EXISTS sale_document_completed_by BIGINT`,
+    `ALTER TABLE listings ADD COLUMN IF NOT EXISTS sale_document_ready_at_sale BOOLEAN`,
     `ALTER TABLE purchase_requests ADD COLUMN IF NOT EXISTS request_type TEXT NOT NULL DEFAULT 'installment'`,
     `ALTER TABLE purchase_requests ADD COLUMN IF NOT EXISTS customer_phone TEXT`,
     `ALTER TABLE purchase_requests ADD COLUMN IF NOT EXISTS assigned_priority INTEGER`,
@@ -218,4 +221,30 @@ async function applySchema(q) {
     ON listings (phone_number)
     WHERE status IN ('active', 'reserved', 'ready_transfer', 'inactive')
   `);
+
+  await seedDefaultCatalog(q);
+}
+
+async function seedDefaultCatalog(q) {
+  const ownerRow = (await q.query(`SELECT id FROM owners WHERE active = true ORDER BY id LIMIT 1`))[0];
+  if (!ownerRow) {
+    await q.query(`INSERT INTO owners(name, active, max_line_slots) VALUES('مالک پیش‌فرض', true, 50)`);
+  }
+  const whRow = (await q.query(`SELECT id FROM warehouses WHERE active = true ORDER BY id LIMIT 1`))[0];
+  if (!whRow) {
+    await q.query(`INSERT INTO warehouses(name, active) VALUES('انبار پیش‌فرض', true) ON CONFLICT (name) DO NOTHING`);
+  }
+  const ownerUid = String(process.env.OWNER_TELEGRAM_ID || '').trim();
+  if (!/^\d+$/.test(ownerUid)) return;
+  const perms = JSON.stringify({
+    add_listing: true, lookup: true, owners: true, warehouses: true, lines: true,
+    reports: true, history: true, invoices: true, partners: true, settings: true, admin_management: true,
+    bot_owner: true
+  });
+  await q.query(
+    `INSERT INTO admins(telegram_user_id, display_name, role, priority, active, permissions)
+     VALUES($1, 'مالک', 'admin', 1, true, $2::jsonb)
+     ON CONFLICT (telegram_user_id) DO UPDATE SET active = true, permissions = EXCLUDED.permissions`,
+    [ownerUid, perms]
+  );
 }

@@ -17,11 +17,25 @@ export function webhookSecretCandidates() {
   return set;
 }
 
-/** کلید setup — اگر SETUP_KEY در env نباشد از توکن مشتق می‌شود */
-export function setupAccessKey() {
-  const explicit = String(process.env.SETUP_KEY || '').trim();
-  if (explicit && explicit !== '[SENSITIVE]') return explicit;
+/** کلید setup مشتق از توکن (یکسان روی هر محیط با همان ربات) */
+export function setupAccessKeyDerived() {
   const token = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
   if (!token) return '';
   return createHash('sha256').update(`simmbot-setup-v1:${token}`).digest('hex').slice(0, 24);
+}
+
+/** کلید setup — env یا مشتق */
+export function setupAccessKey() {
+  const explicit = String(process.env.SETUP_KEY || '').trim();
+  if (explicit && explicit !== '[SENSITIVE]') return explicit;
+  return setupAccessKeyDerived();
+}
+
+export function isValidSetupKey(provided) {
+  const key = String(provided ?? '').trim();
+  if (!key) return false;
+  const explicit = String(process.env.SETUP_KEY || '').trim();
+  if (explicit && explicit !== '[SENSITIVE]' && key === explicit) return true;
+  const derived = setupAccessKeyDerived();
+  return Boolean(derived && key === derived);
 }
