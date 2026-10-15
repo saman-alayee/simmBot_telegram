@@ -38,12 +38,10 @@ async function prepareDb(q) {
 export default {
   async fetch(request) {
     if (request.method !== 'POST') return new Response('OK');
+    const incoming = request.headers.get('x-telegram-bot-api-secret-token') || '';
     const allowedSecrets = webhookSecretCandidates();
-    if (allowedSecrets.size) {
-      const incoming = request.headers.get('x-telegram-bot-api-secret-token') || '';
-      if (!allowedSecrets.has(incoming)) {
-        return new Response('Unauthorized', { status: 401 });
-      }
+    if (incoming && allowedSecrets.size && !allowedSecrets.has(incoming)) {
+      return new Response('Unauthorized', { status: 401 });
     }
     let update;
     try {

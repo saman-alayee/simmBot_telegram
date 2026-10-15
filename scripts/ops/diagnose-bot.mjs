@@ -114,8 +114,10 @@ if (process.argv.includes('--fix-webhook')) {
     console.log('\nSETUP_RESULT', fix.status, JSON.stringify(json));
   }
   const body = { url: `${origin}/api/telegram`, allowed_updates: ['message', 'callback_query'] };
-  const derived = webhookSecretToken();
-  if (derived) body.secret_token = derived;
+  if (process.argv.includes('--with-secret')) {
+    const derived = webhookSecretToken();
+    if (derived) body.secret_token = derived;
+  }
   const set = await tg('setWebhook', body);
   console.log('SET_WEBHOOK_LOCAL_ENV', JSON.stringify(set));
   if (set.ok) {
