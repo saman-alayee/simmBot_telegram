@@ -42,10 +42,9 @@ test('channelText uses all customizable channel strings', () => {
   });
   assert.match(withNote, /خوش‌قیمت، تحویل فوری/);
   const keyboard = channelPurchaseKeyboard(row, { bot: 'SamiSIM0912Bot', calcUrl: 'https://example.com/calc', installmentEnabled: true, statusMessages: msgs });
-  assert.equal(keyboard.inline_keyboard[0][1].url, 'https://t.me/SamiSIM0912Bot?start=cash_1');
-  assert.equal(keyboard.inline_keyboard[0][1].text, 'نقد');
-  const ready = channelPurchaseKeyboard({ ...row, status: 'ready_transfer' }, { bot: 'SamiSIM0912Bot', calcUrl: 'https://example.com/calc', installmentEnabled: true, statusMessages: msgs });
-  assert.equal(ready.inline_keyboard[0][1].url, 'https://t.me/SamiSIM0912Bot?start=cash_1');
+  assert.deepEqual(keyboard.inline_keyboard, []);
+  const ready = channelPurchaseKeyboard({ ...row, status: 'ready_transfer' });
+  assert.deepEqual(ready.inline_keyboard, []);
 });
 
 test('renderChannelDocumentLine respects templates', () => {
